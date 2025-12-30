@@ -1,0 +1,80 @@
+# ---- OS junk ----
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ---- VS Code ----
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/c_cpp_properties.json
+*.code-workspace
+
+# ---- C/C++ build artifacts ----
+*.o
+*.obj
+*.lo
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+*.i
+*.ii
+*.s
+*.d
+*.pdb
+*.idb
+*.ilk
+
+# ---- Debug / profiling ----
+*.dSYM/
+*.su
+*.gcno
+*.gcda
+*.gcov
+*.profraw
+*.profdata
+gmon.out
+perf.data*
+vgcore.*
+
+# ---- Common build dirs ----
+build/
+Build/
+bin/
+Bin/
+out/
+dist/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+
+# ---- CMake presets/user files ----
+CMakeUserPresets.json
+CMakePresets.json.user
+
+# ---- Make / Ninja ----
+Makefile
+*.make
+*.ninja
+.ninja_deps
+.ninja_log
+
+# ---- IDE extras (optional) ----
+# JetBrains / CLion
+.idea/
+# Visual Studio (not VS Code)
+.vs/
+
+# ---- Local env ----
+.env

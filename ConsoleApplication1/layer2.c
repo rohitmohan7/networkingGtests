@@ -11,7 +11,7 @@ uint8_t maxL2Addr[MAX_PORT];
 
 void l2Init() {
 	memset(mst_token, 0, sizeof mst_token);
-	memset(l2TmLstRx, 0, sizeof tmLstRx);
+	memset(l2TmLstRx, 0, sizeof l2TmLstRx);
 	memset(l2PktDesc, 0xFF, sizeof l2PktDesc);
 	memset(maxL2Addr, 0xFF, sizeof maxL2Addr);
 }
@@ -30,6 +30,7 @@ void l2SendMst(uint8_t port) {
 	l2PktDesc[port].l2Pkt.msgDesc.mst = l2PktDesc[port].l2Pkt.addr; // so we can select next MST
 
 	//l2PktDesc->l2Pkt.crc =
+	l1Send(port);
 }
 
 void l2Tick(uint8_t ms) { // ms is milliseconds since last tick 

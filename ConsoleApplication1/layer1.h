@@ -1,4 +1,5 @@
 ﻿#include "global.h"
+#include "common.h"
 
 //void l1Init();
-void l1TransferHandleIRQ(uint8_t port);
+void l1TransferHandleIRQ(UART_Type* UART, uint8_t instance);

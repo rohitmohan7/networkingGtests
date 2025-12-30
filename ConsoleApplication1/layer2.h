@@ -5,6 +5,11 @@ extern bool mst_token[MAX_PORT];
 extern uint8_t maxL2Addr[MAX_PORT];
 void l2TmLstRxRst(uint8_t port);
 
+static inline L2PktDesc* L2_GetPktDesc(uint8_t port)
+{
+	return &l2PktDesc[port];
+}
+
 #define L2_PKT_TYPE_INVALID 0xFF
 #define L2_PKT_TYPE_ACK 1
 #define L2_PKT_TYPE_NAK 2

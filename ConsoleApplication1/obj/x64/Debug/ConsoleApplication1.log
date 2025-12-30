@@ -1,0 +1,13 @@
+﻿  Validating sources
+  Copying sources remotely
+  Starting remote build
+  Compiling sources:
+  main.cpp
+C:\Users\rohitm\source\repos\ConsoleApplication1\ConsoleApplication1\main.cpp(1460,28): warning : conversion from ‘int’ to ‘uint16_t’ {aka ‘short unsigned int’} may change value [-Wconversion]
+C:\Users\rohitm\source\repos\ConsoleApplication1\ConsoleApplication1\main.cpp(1460,28): warning :  1460 |         myPos = GetParam().pos;
+C:\Users\rohitm\source\repos\ConsoleApplication1\ConsoleApplication1\main.cpp(1460,28): warning :       |                 ~~~~~~~~~~~^~~
+C:\Users\rohitm\source\repos\ConsoleApplication1\ConsoleApplication1\main.cpp(1033,13): warning : ‘void UART_WriteNonBlocking(const uint8_t*, size_t)’ defined but not used [-Wunused-function]
+C:\Users\rohitm\source\repos\ConsoleApplication1\ConsoleApplication1\main.cpp(1033,13): warning :  1033 | static void UART_WriteNonBlocking(const uint8_t* data, size_t length)
+C:\Users\rohitm\source\repos\ConsoleApplication1\ConsoleApplication1\main.cpp(1033,13): warning :       |             ^~~~~~~~~~~~~~~~~~~~~
+  Linking objects
+  ConsoleApplication1.vcxproj -> C:\Users\rohitm\source\repos\ConsoleApplication1\ConsoleApplication1\bin\x64\Debug\ConsoleApplication1.out

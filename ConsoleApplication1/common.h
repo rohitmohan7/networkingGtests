@@ -1,5 +1,8 @@
 ﻿#include "global.h"
 
+#ifndef COMMON_H_
+#define COMMON_H_
+
 /* -------------------- Main -------------------- */
 
 #define __IO
@@ -64,3 +67,9 @@ typedef struct {
  *  0b1..RDRF interrupt or DMA transfer requests enabled.
  */
 #define UART_C2_RIE_MASK                         (0x20U)
+
+#define UART_S1_TDRE_MASK                        (0x80U)
+
+#define UART_S1_TC_MASK                          (0x40U)
+
+#endif

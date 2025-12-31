@@ -100,11 +100,12 @@
     <ClCompile>
       <AdditionalIncludeDirectories>/usr/local/include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <CppLanguageStandard>c++17</CppLanguageStandard>
+      <AdditionalOptions>-DUNIT_TEST %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(Link.AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalOptions>-Wl,--whole-archive /usr/local/lib/libgtest.a -Wl,--no-whole-archive -pthread %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>-Wl,--whole-archive /usr/local/lib/libgtest.a -Wl,--whole-archive /usr/local/lib/libgmock.a -Wl,--no-whole-archive -pthread -Wl,--wrap=l1UARTWriteNonBlocking %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

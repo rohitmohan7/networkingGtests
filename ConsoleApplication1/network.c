@@ -1,6 +1,7 @@
 ﻿#include "network.h"
 #include "layer2.h"
 #include "layer3.h"
+#include "layer1.h"
 
 uint16_t port_addr[MAX_PORT]; // L3 & L2
 
@@ -36,10 +37,14 @@ void setPortAddr() {
 
     for (uint8_t port = 0; port < MAX_PORT; port++) { // max addr for MST rollover
         maxL2Addr[port] = l2Addr[port];
+        if (maxL2Addr[port] <= 1) { // deactivate port if only single device
+            port_addr[port] = 0;
+        }
     }
 }
 
-void netInit() {
+void netInit(UART_Type* UART[MAX_PORT]) {
+    l1Init(UART);
 	l2Init();
 	l3Init();
     setPortAddr();

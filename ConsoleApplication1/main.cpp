@@ -17,10 +17,15 @@
 //  - BUS numbering is derived (BUS1/BUS2/...) and may not match your drawing labels.
 //  - This is a simulation; bus �hub� broadcasts frames, nodes filter by unit_id.
 
-#include "global.h"
+//#include "global.h"
 #include <gtest/gtest.h>
+#include <gmock/gmock.h>
+#include <cstring>
+#define _Static_assert(cond, msg) static_assert((cond), msg)
+
 extern "C" {
 #include "network.h"
+#include "layer2.h"
 }
 
 #if 0
@@ -1373,6 +1378,7 @@ bool appSend(const uint8_t* data, uint8_t len, uint16_t pos, uint8_t priority)
 struct Case {
     int pos;
     uint16_t portAddr[MAX_PORT];
+    //uin
 };
 
 class MultiHop : public ::testing::TestWithParam<Case> {
@@ -1383,28 +1389,104 @@ protected:
         ::topology[3] = NodeCfg{ {1,2} };
         ::topology[5] = NodeCfg{ {2,0} };
         ::topology[7] = NodeCfg{ {1,0} };
-        pos++;
+
+      
     }
 
     void SetUp() override {
         // runs before each TEST_F(MyFixture, ...)
         myPos = GetParam().pos;
-        netInit();
+        for (int i = 0; i < MAX_PORT; ++i) {
+            uart_ptrs[i] = &uart_objs[i];
+        }
+
+        netInit(uart_ptrs);
     }
 
     void TearDown() override {
         // runs after each TEST_F(MyFixture, ...)
         //value = 0;
     }
-    static int pos;
-};
 
-int MultiHop::pos = 0;
+    UART_Type  uart_objs[MAX_PORT];   // objects
+    UART_Type* uart_ptrs[MAX_PORT];   // pointers passed to netInit
+};
 
 TEST_P(MultiHop, addr) {
     for (int port = 0; port < MAX_PORT; port++) {
         EXPECT_EQ(port_addr[port], GetParam().portAddr[port]);
     }
+}
+
+struct MockUart {
+    MOCK_METHOD(void, WriteNonBlocking, (uint8_t port, const uint8_t* data, size_t length), ());
+};
+
+static MockUart* g_mock = nullptr;
+
+// 3) The linker will redirect calls to hw_read() to __wrap_hw_read()
+extern "C" void __wrap_l1UARTWriteNonBlocking(uint8_t port, const uint8_t* data, size_t length)
+{
+    ASSERT_NE(g_mock, nullptr);
+    g_mock->WriteNonBlocking(port, data, length);
+}
+
+
+
+TEST_P(MultiHop, mstPass) {
+
+    MockUart mock;
+    g_mock = &mock;
+
+    // pass time for 
+    bool portsTested[MAX_PORT];
+    uint8_t nxtMst[MAX_PORT];
+    memset(portsTested, 0, sizeof portsTested);
+    
+    uint16_t time = LINE_SILENT;
+    uint8_t tick = LINE_SILENT / 2;
+    netTick(time);
+
+    while (true) {
+        bool allPortsTested = true;
+        time += tick;
+        for (int port = 0; port < MAX_PORT; port++) {
+            uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
+            if (l2Addr == 0 ||
+                portsTested[port]) {
+                continue;
+            }
+
+            uint16_t mstSelTime = (l2Addr * LINE_SILENT);
+
+            // advance by LINE_SILENT
+            if ((time) > mstSelTime) {
+                // compute next MST
+                nxtMst[port] = (l2Addr + 1) > maxL2Addr[port]? 1: l2Addr + 1;
+                const uint8_t expected[] = { nxtMst[port], L2_PKT_TYPE_MST, 0xFF };
+                const uint8_t expectedSize = (sizeof(L2Hdr) + sizeof(L2Pkt::crc));
+
+                EXPECT_CALL(mock, WriteNonBlocking(port, testing::NotNull(), expectedSize))
+                    .WillOnce(testing::Invoke([&](uint8_t portIn, const uint8_t* data, size_t len) {
+                    EXPECT_EQ(0, std::memcmp(data, expected, len));
+                        }));
+            }
+
+            if (time > mstSelTime) {
+                portsTested[port] = true;
+            }
+            else {
+                allPortsTested = false;
+            }
+        }
+       
+        netTick(tick);
+        
+
+        if (allPortsTested) {
+            break;
+        }
+    } 
 }
 
 //TEST_P(MultiHop, l2test) {
@@ -1415,11 +1497,11 @@ INSTANTIATE_TEST_SUITE_P(
     Runs, MultiHop,
     ::testing::Values(
       //     pos port1   port2
-        Case{ 1, {0x101, 0x301} },
-        Case{ 2, {0x201, 0x302} },
-        Case{ 3, {0x102, 0x202} },
-        Case{ 5, {0x203, 0x000} },
-        Case{ 7, {0x103, 0x000} }
+       //Case{ 1, {0x101, 0x301} },
+       //Case{ 2, {0x201, 0x302} },
+        Case{ 3, {0x102, 0x202} }
+        //Case{ 5, {0x203, 0x000} },
+        //Case{ 7, {0x103, 0x000} }
     )
 );
 

@@ -3,7 +3,6 @@
 
 extern bool mst_token[MAX_PORT];
 extern uint8_t maxL2Addr[MAX_PORT];
-void l2TmLstRxRst(uint8_t port);
 
 #if 0
 static inline L2PktDesc* L2_GetPktDesc(uint8_t port)
@@ -16,6 +15,8 @@ static inline L2PktDesc* L2_GetPktDesc(uint8_t port)
 #define L2_PKT_TYPE_ACK 1
 #define L2_PKT_TYPE_NAK 2
 #define L2_PKT_TYPE_MST 0x80
+
+#define LINE_SILENT 100
 
 typedef struct __attribute__((packed)) {
 	uint8_t addr;
@@ -34,8 +35,12 @@ typedef struct __attribute__((packed)) {
 			uint8_t  head_off;       /* 0..UNIT-1 */
 			uint8_t  tail_used;
 		} pdu;
-		uint32_t mst;
-	} msgDesc;
+
+		struct {
+			uint8_t mstCrc;
+			uint8_t nextMst;
+		} mst;
+	} msg;
 	
 	uint8_t crc;
 
@@ -49,6 +54,8 @@ typedef struct __attribute__((packed)) {
 } L2PktDesc; // 9 bytes
 _Static_assert(sizeof(L2PktDesc) == 9, "L2Pkt wrong size");
 
+extern L2PktDesc l2PktDesc[MAX_PORT];
+
 //struct L3Packet;
 //void l2Send(L3Packet packet, uint8_t addr);
 
@@ -56,4 +63,10 @@ void l2Init();
 
 void l2Tick(uint8_t ms); // ms is milliseconds since last tick
 
-uint8_t l2GetTxPkt(uint8_t port, uint8_t* pkt, uint8_t len, uint8_t idx);
+bool l2GetTxPkt(uint8_t port, uint8_t** ptr, uint8_t* len, uint8_t idx);
+
+uint8_t l2GetRxPkt(uint8_t port, uint8_t* ptr, uint8_t len, uint8_t idx);
+
+void l2TxCmplt(uint8_t port);
+
+void l2AbortTx(uint8_t port);

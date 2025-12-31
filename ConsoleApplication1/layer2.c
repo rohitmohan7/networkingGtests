@@ -24,7 +24,7 @@ void l2TmLstRxRst(uint8_t port) {
 
 }*/
 
-uint8_t l2GetPkt(uint8_t * ptr, uint8_t len, uint8_t idx) {
+uint8_t l2GetTxPkt(uint8_t port, uint8_t * ptr, uint8_t len, uint8_t idx) {
 
 }
 

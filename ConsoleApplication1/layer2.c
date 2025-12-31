@@ -24,13 +24,17 @@ void l2TmLstRxRst(uint8_t port) {
 
 }*/
 
+uint8_t l2GetPkt(uint8_t * ptr, uint8_t len, uint8_t idx) {
+
+}
+
 void l2SendMst(uint8_t port) {
-	l2PktDesc[port].l2Pkt.addr = (port_addr[port] + 1) % maxL2Addr[port];  // Best way to find next table in line ? 
-	l2PktDesc[port].l2Pkt.type = L2_PKT_TYPE_MST;
-	l2PktDesc[port].l2Pkt.msgDesc.mst = l2PktDesc[port].l2Pkt.addr; // so we can select next MST
+	l2PktDesc[port].l2Pkt.hdr.addr = (port_addr[port] + 1) % maxL2Addr[port];  // Best way to find next table in line ? 
+	l2PktDesc[port].l2Pkt.hdr.type = L2_PKT_TYPE_MST;
+	l2PktDesc[port].l2Pkt.msgDesc.mst = l2PktDesc[port].l2Pkt.hdr.addr; // so we can select next MST
 
 	//l2PktDesc->l2Pkt.crc =
-	l1Send(port);
+	l1StartTx(port);
 }
 
 void l2Tick(uint8_t ms) { // ms is milliseconds since last tick 

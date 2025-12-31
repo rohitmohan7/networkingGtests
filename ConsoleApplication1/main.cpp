@@ -1442,15 +1442,19 @@ TEST_P(MultiHop, mstPass) {
     bool portsTested[MAX_PORT];
     uint8_t nxtMst[MAX_PORT];
     memset(portsTested, 0, sizeof portsTested);
-    
-    uint16_t time = LINE_SILENT;
+
+    bool mstToken[MAX_PORT];
+    memset(mstToken, 0, sizeof mstToken);
+
+    uint16_t time[MAX_PORT];
+    std::fill(std::begin(time), std::end(time), LINE_SILENT);
     uint8_t tick = LINE_SILENT / 2;
-    netTick(time);
+    netTick(LINE_SILENT);
 
     while (true) {
         bool allPortsTested = true;
-        time += tick;
         for (int port = 0; port < MAX_PORT; port++) {
+            time[port] += tick;
             uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
             if (l2Addr == 0 ||
                 portsTested[port]) {
@@ -1460,22 +1464,26 @@ TEST_P(MultiHop, mstPass) {
             uint16_t mstSelTime = (l2Addr * LINE_SILENT);
 
             // advance by LINE_SILENT
-            if ((time) > mstSelTime) {
-                // compute next MST
-                nxtMst[port] = (l2Addr + 1) > maxL2Addr[port]? 1: l2Addr + 1;
-                const uint8_t expected[] = { nxtMst[port], L2_PKT_TYPE_MST, 0xFF };
-                const uint8_t expectedSize = (sizeof(L2Hdr) + sizeof(L2Pkt::crc));
+            if (time[port] > mstSelTime) {
+                if (!mstToken[port]) {
+                    // compute next MST
+                    nxtMst[port] = (l2Addr + 1) > maxL2Addr[port] ? 1 : l2Addr + 1;
+                    const uint8_t expected[] = { nxtMst[port], L2_PKT_TYPE_MST, 0xFF };
+                    const uint8_t expectedSize = (sizeof(L2Hdr) + sizeof(L2Pkt::crc));
 
-                EXPECT_CALL(mock, WriteNonBlocking(port, testing::NotNull(), expectedSize))
-                    .WillOnce(testing::Invoke([&](uint8_t portIn, const uint8_t* data, size_t len) {
-                    EXPECT_EQ(0, std::memcmp(data, expected, len));
-                        }));
+                    EXPECT_CALL(mock, WriteNonBlocking(port, testing::NotNull(), expectedSize))
+                        .WillOnce(testing::Invoke([&](uint8_t portIn, const uint8_t* data, size_t len) {
+                        EXPECT_EQ(0, std::memcmp(data, expected, len));
+                            }));
+
+                    mstToken[port] = true;
+                    portsTested[port] = true;
+                } else {
+
+                }
             }
 
-            if (time > mstSelTime) {
-                portsTested[port] = true;
-            }
-            else {
+            if (!portsTested[port]) {
                 allPortsTested = false;
             }
         }

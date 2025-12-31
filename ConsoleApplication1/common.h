@@ -56,6 +56,8 @@ typedef struct {
 } UART_Type;
 #define UART_C2_TE_MASK                          (0x8U)
 #define UART_S1_RDRF_MASK                        (0x20U)
+#define UART_C2_TIE_MASK                         (0x80U)
+#define UART_C2_TCIE_MASK                        (0x40U)
 
 /*! C2_RIE - Receiver Full Interrupt or DMA Transfer Enable
  *  0b0..RDRF interrupt and DMA transfer requests disabled.

@@ -10,7 +10,7 @@ static uint8_t txIndex = 0;
 
 void l2UARTTransferAbortSend(UART_Type* UART) {
 	txIndex = 0;
-	UART->C2 &= ~((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK);
+	UART->C2 &= ~((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK);
 }
 
 void l1TransferHandleIRQ(UART_Type* UART, uint8_t instance) {
@@ -18,7 +18,7 @@ void l1TransferHandleIRQ(UART_Type* UART, uint8_t instance) {
 	
 	if (((UART_S1_RDRF_MASK & UART->S1) != 0U) && ((UART_C2_RIE_MASK & UART->C2) != 0U)) {
 		// abort active transfers
-		
+		l2UARTTransferAbortSend(UART);
 		
 		// first reset L2 rx timer
 		l2TmLstRxRst(port);

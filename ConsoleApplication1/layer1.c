@@ -7,17 +7,17 @@
 
 UART_Type* UART[MAX_PORT];
 
-static uint8_t txIndex;
-static uint8_t rxIndex;
+static uint8_t txIndex[MAX_PORT];
+static uint8_t rxIndex[MAX_PORT];
 
 static inline uint8_t min(uint8_t a, uint8_t b) { return (a < b) ? a : b; }
 
 void l1Init(UART_Type* UARTPtr[MAX_PORT]) {
-	txIndex = 0;
-	rxIndex = 0;
+
 	for (int port = 0; port < MAX_PORT; port++) {
 		UART[port] = UARTPtr[port];
-
+		txIndex[port] = 0;
+		rxIndex[port] = 0;
 		//init registers
 	}
 }
@@ -51,10 +51,10 @@ void l1Rx(UART_Type* UART, uint8_t port) {
 	uint8_t  rxLen = UART->RCFIFO;
 	do {
 		uint8_t* ptr;
-		len = l2GetRxPkt(port, ptr, rxLen, rxIndex); // return remaining len
+		len = l2GetRxPkt(port, ptr, rxLen, rxIndex[port]); // return remaining len
 		l1UARTReadNonBlocking(UART, ptr, len);
 		rxLen -= len;
-		rxIndex += len;
+		rxIndex[port] += len;
 	} while (len > 0 && rxLen > 0);
 
 	if (rxLen > 0) { // not enough mem to write
@@ -85,12 +85,12 @@ void l1Tx(UART_Type* UART, uint8_t port) {
 		uint8_t* ptr;
 		uint8_t  len;
 
-		txCmplt = l2GetTxPkt(port, &ptr, &len, txIndex); // return remaining len
+		txCmplt = l2GetTxPkt(port, &ptr, &len, txIndex[port]); // return remaining len
 		uint8_t txLenMin = min(len, txLen);
 		l1UARTWriteNonBlocking(port, ptr, txLenMin);
 
 		txLen -= txLenMin;
-		txIndex += txLenMin;
+		txIndex[port] += txLenMin;
 	} while (txLen > 0 && !txCmplt);
 	/* Enable transmitter interrupt. */
 	if (txCmplt) {
@@ -133,7 +133,7 @@ void validateTxEcho(UART_Type* UART, uint8_t port, uint8_t count) {
 		bool valid = l1UARTCmpNonBlocking(UART, ptr, rxLenMin);
 
 		count -= len;
-		rxIndex += len;
+		rxIndex[port] += len;
 
 		if (txCmplt && count > 0) { // shouldnt be here since validateTxEcho is invoked when (rxIndex + count) <= txIndex but just incase
 			l1AbortTx(UART, port);
@@ -152,7 +152,7 @@ void l1TransferHandleIRQ(UART_Type* UART, uint8_t instance) {
 	if (((UART_S1_RDRF_MASK & status) != 0U) && ((UART_C2_RIE_MASK & cntrl) != 0U)) {
 		uint8_t count = UART->RCFIFO;
 		// validate echo
-		if ((rxIndex + count) > txIndex) { // tx packet
+		if ((rxIndex + count) > txIndex[port]) { // tx packet
 			if (cntrl & UART_C2_TE_MASK) { // recieved more packets echo will tx still active abort
 				l1AbortTx(UART, port);
 			}

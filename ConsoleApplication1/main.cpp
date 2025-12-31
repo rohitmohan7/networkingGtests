@@ -1497,11 +1497,11 @@ INSTANTIATE_TEST_SUITE_P(
     Runs, MultiHop,
     ::testing::Values(
       //     pos port1   port2
-       //Case{ 1, {0x101, 0x301} },
-       //Case{ 2, {0x201, 0x302} },
-        Case{ 3, {0x102, 0x202} }
-        //Case{ 5, {0x203, 0x000} },
-        //Case{ 7, {0x103, 0x000} }
+       Case{ 1, {0x101, 0x301} },
+       Case{ 2, {0x201, 0x302} },
+       Case{ 3, {0x102, 0x202} },
+       Case{ 5, {0x203, 0x000} },
+       Case{ 7, {0x103, 0x000} }
     )
 );
 

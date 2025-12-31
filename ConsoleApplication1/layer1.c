@@ -39,6 +39,10 @@ void l1Rx(UART_Type* UART) {
 		rxLen -= len;
 		rxIndex += len;
 	} while (len > 0 && rxLen > 0);
+
+	if (rxLen > 0) { // not enough mem to write
+
+	}
 }
 
 void l1TransferHandleIRQ(UART_Type* UART, uint8_t instance) {

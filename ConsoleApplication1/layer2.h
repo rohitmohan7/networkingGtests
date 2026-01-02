@@ -30,6 +30,8 @@ static inline L2TxPktDesc* L2_GetPktDesc(uint8_t port)
 #define INTER_FRAME_SILENCE 2 // 3.5 char times for baud less than 19200, else fixed 1.750 ms
 #define INTER_CHAR_SILENCE 1 // 1.5 char times for baud less than 19200, else fixed 750 µs
 
+#define RS485_FRAME_SIZE 256
+
 typedef struct __attribute__((packed)) {
 	uint8_t addr;
 	uint8_t type;
@@ -65,6 +67,8 @@ typedef struct __attribute__((packed)) L2Pkt {
 
 } L2Pkt; // size 7 bytes
 //_Static_assert(sizeof(L2Pkt) == 7, "L2Pkt wrong size");
+
+#define L2_FRAME_SIZE (RS485_FRAME_SIZE - (sizeof(L2Hdr) + sizeof(((L2Pkt*)0)->crc)))
 
 typedef struct __attribute__((packed)) {
 	L2Pkt l2TxPkt;

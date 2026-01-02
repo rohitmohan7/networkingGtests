@@ -21,11 +21,13 @@
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include <cstring>
+#include <array>
 #define _Static_assert(cond, msg) static_assert((cond), msg)
 
 extern "C" {
 #include "network.h"
 #include "layer2.h"
+#include "layer1.h"
 }
 
 #if 0
@@ -1378,6 +1380,7 @@ bool appSend(const uint8_t* data, uint8_t len, uint16_t pos, uint8_t priority)
 struct Case {
     int pos;
     uint16_t portAddr[MAX_PORT];
+    uint8_t devCnt[MAX_PORT];
     //uin
 };
 
@@ -1389,16 +1392,16 @@ protected:
         ::topology[3] = NodeCfg{ {1,2} };
         ::topology[5] = NodeCfg{ {2,0} };
         ::topology[7] = NodeCfg{ {1,0} };
-
+        for (int i = 0; i < MAX_PORT; ++i) {
+            uart_ptrs[i] = &uart_objs[i];
+        }
       
     }
 
     void SetUp() override {
         // runs before each TEST_F(MyFixture, ...)
         myPos = GetParam().pos;
-        for (int i = 0; i < MAX_PORT; ++i) {
-            uart_ptrs[i] = &uart_objs[i];
-        }
+        
 
         netInit(uart_ptrs);
     }
@@ -1408,9 +1411,13 @@ protected:
         //value = 0;
     }
 
-    UART_Type  uart_objs[MAX_PORT];   // objects
-    UART_Type* uart_ptrs[MAX_PORT];   // pointers passed to netInit
+    static UART_Type  uart_objs[MAX_PORT];   // objects
+public:
+    static UART_Type* uart_ptrs[MAX_PORT];   // pointers passed to netInit
 };
+
+UART_Type MultiHop::uart_objs[MAX_PORT];
+UART_Type* MultiHop::uart_ptrs[MAX_PORT];
 
 TEST_P(MultiHop, addr) {
     for (int port = 0; port < MAX_PORT; port++) {
@@ -1419,18 +1426,30 @@ TEST_P(MultiHop, addr) {
 }
 
 struct MockUart {
-    MOCK_METHOD(void, WriteNonBlocking, (uint8_t port, const uint8_t* data, size_t length), ());
+    MOCK_METHOD(void, l1UARTWriteNonBlocking, (UART_Type* UART, const uint8_t* data, size_t length), ());
+    MOCK_METHOD(bool, CmpNonBlocking, (UART_Type* UART, const uint8_t* data, size_t length), ());
 };
 
 static MockUart* g_mock = nullptr;
 
 // 3) The linker will redirect calls to hw_read() to __wrap_hw_read()
-extern "C" void __wrap_l1UARTWriteNonBlocking(uint8_t port, const uint8_t* data, size_t length)
+extern "C" void l1UARTWriteNonBlocking(UART_Type* UART, const uint8_t* data, size_t length)
 {
     ASSERT_NE(g_mock, nullptr);
-    g_mock->WriteNonBlocking(port, data, length);
+    g_mock->l1UARTWriteNonBlocking(UART, data, length);
+
+    // echo 
+    uint8_t instance = UART== MultiHop::uart_ptrs[0] ? 3 : 4;
+    UART->S1 |= UART_S1_RDRF_MASK;
+    UART->RCFIFO = length;
+    l1TransferHandleIRQ(UART, instance);
 }
 
+extern "C" bool l1UARTCmpNonBlocking(UART_Type* UART, const uint8_t* data, size_t length)
+{
+    EXPECT_NE(g_mock, nullptr);
+    return  g_mock->CmpNonBlocking(UART, data, length);
+}
 
 
 TEST_P(MultiHop, mstPass) {
@@ -1456,8 +1475,8 @@ TEST_P(MultiHop, mstPass) {
         for (int port = 0; port < MAX_PORT; port++) {
             time[port] += tick;
             uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
-            if (l2Addr == 0 ||
-                portsTested[port]) {
+            if (l2Addr == 0 /* ||
+                portsTested[port]*/) {
                 continue;
             }
 
@@ -1467,20 +1486,93 @@ TEST_P(MultiHop, mstPass) {
             if (time[port] > mstSelTime) {
                 if (!mstToken[port]) {
                     // compute next MST
-                    nxtMst[port] = (l2Addr + 1) > maxL2Addr[port] ? 1 : l2Addr + 1;
-                    const uint8_t expected[] = { nxtMst[port], L2_PKT_TYPE_MST, 0xFF };
+                    nxtMst[port] = (l2Addr + 1) > GetParam().devCnt[port] ? 1 : l2Addr + 1;
+                    std::array<uint8_t, 3> expected{ { nxtMst[port], L2_PKT_TYPE_MST, 0xFF } };
                     const uint8_t expectedSize = (sizeof(L2Hdr) + sizeof(L2Pkt::crc));
 
-                    EXPECT_CALL(mock, WriteNonBlocking(port, testing::NotNull(), expectedSize))
-                        .WillOnce(testing::Invoke([&](uint8_t portIn, const uint8_t* data, size_t len) {
-                        EXPECT_EQ(0, std::memcmp(data, expected, len));
-                            }));
+                    EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart_ptrs[port], testing::NotNull(), expectedSize))
+                        .Times(1)
+                        .WillOnce(testing::Invoke([expected](UART_Type* UART, const uint8_t* data, size_t len) {
+                        if (UART == uart_ptrs[0]) {
+                            printf("MST write port 0:\n");
+                        }
+                        else {
+                            printf("MST write port 1:\n");
+                        }
+                        printf("data: %d, %d, %d\n", data[0], data[1], data[2]);
+                        printf("expected: %d, %d, %d\n", expected[0], expected[1], expected[2]);
+                        EXPECT_EQ(0, std::memcmp(data, expected.data(), expected.size()));
+                            }))
+                        .RetiresOnSaturation();
+
+                    // echo
+                    EXPECT_CALL(mock, CmpNonBlocking(uart_ptrs[port], testing::NotNull(), expectedSize))
+                        .Times(1)
+                        .WillOnce(testing::Invoke([expected](UART_Type* UART, const uint8_t* data, size_t len) {
+                        if (UART == uart_ptrs[0]) {
+                            printf("MST comp port 0:\n");
+                        }
+                        else {
+                            printf("MST comp port 1:\n");
+                        }
+                        printf("data: %d, %d, %d\n", data[0], data[1], data[2]);
+                        printf("expected: %d, %d, %d\n", expected[0], expected[1], expected[2]);
+                            EXPECT_EQ(0, std::memcmp(data, expected.data(), expected.size()));
+                            return true;
+                            }))
+                        .RetiresOnSaturation();
 
                     mstToken[port] = true;
-                    portsTested[port] = true;
-                } else {
-
+                    //portsTested[port] = true;
+                    time[port] = 0;
                 }
+            }
+            else if (mstToken[port] && time[port] > (LINE_SILENT/2)) {
+                nxtMst[port] = (nxtMst[port] + 1) > GetParam().devCnt[port] ? 1 : nxtMst[port] + 1;
+
+                if (nxtMst[port] == l2Addr) // rollover test done for port
+                {
+                    portsTested[port] = true;
+                    nxtMst[port] = (nxtMst[port] + 1) > GetParam().devCnt[port] ? 1 : nxtMst[port] + 1;
+                }
+
+                std::array<uint8_t, 3> expected{ { nxtMst[port], L2_PKT_TYPE_MST, 0xFF } };
+                const uint8_t expectedSize = (sizeof(L2Hdr) + sizeof(L2Pkt::crc));
+
+                EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart_ptrs[port], testing::NotNull(), expectedSize))
+                    .Times(1)
+                    .WillOnce(testing::Invoke([expected](UART_Type* UART, const uint8_t* data, size_t len) {
+                    if (UART == uart_ptrs[0]) {
+                        printf("write port 0:\n");
+                    }
+                    else {
+                        printf("write port 1:\n");
+                    }
+                    printf("data: %d, %d, %d\n", data[0], data[1], data[2]);
+                    printf("expected: %d, %d, %d\n", expected[0], expected[1], expected[2]);
+                    EXPECT_EQ(0, std::memcmp(data, expected.data(), expected.size()));
+                        }))
+                    .RetiresOnSaturation();
+
+                // echo
+                EXPECT_CALL(mock, CmpNonBlocking(uart_ptrs[port], testing::NotNull(), expectedSize))
+                    .Times(1)
+                    .WillOnce(testing::Invoke([expected](UART_Type* UART, const uint8_t* data, size_t len) {
+                    if (UART == uart_ptrs[0]) {
+                        printf("comp port 0:\n");
+                    }
+                    else {
+                        printf("comp port 1:\n");
+                    }
+                    printf("data: %d, %d, %d\n", data[0], data[1], data[2]);
+                    printf("expected: %d, %d, %d\n", expected[0], expected[1], expected[2]);
+                    EXPECT_EQ(0, std::memcmp(data, expected.data(), expected.size()));
+                    return true;
+                        }))
+                    .RetiresOnSaturation();
+
+                //portsTested[port] = true;
+                time[port] = 0;
             }
 
             if (!portsTested[port]) {
@@ -1505,11 +1597,11 @@ INSTANTIATE_TEST_SUITE_P(
     Runs, MultiHop,
     ::testing::Values(
       //     pos port1   port2
-       Case{ 1, {0x101, 0x301} },
-       Case{ 2, {0x201, 0x302} },
-       Case{ 3, {0x102, 0x202} },
-       Case{ 5, {0x203, 0x000} },
-       Case{ 7, {0x103, 0x000} }
+      Case{ 1, {0x101, 0x301}, {3, 2} },
+      Case{ 2, {0x201, 0x302}, {3, 2} },
+      Case{ 3, {0x102, 0x202}, {3, 3} },
+      Case{ 5, {0x203, 0x000}, {3, 0} },
+      Case{ 7, {0x103, 0x000}, {3, 0} }
     )
 );
 

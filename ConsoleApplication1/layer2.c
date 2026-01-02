@@ -95,7 +95,7 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 			l2PktDesc[port].time = (ms > (0xFFu - t)) ? 0xFF : (uint8_t)(t + ms);
 
 			if (l2PktDesc[port].l2Pkt.hdr.type == L2_PKT_TYPE_MST &&
-				t > (LINE_SILENT / 2)) { // retry with next mst
+				l2PktDesc[port].time > (LINE_SILENT / 2)) { // retry with next mst
 				l2SendMst(port, l2PktDesc[port].l2Pkt.msg.mst.nextMst);
 			}
 

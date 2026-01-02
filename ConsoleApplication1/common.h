@@ -72,4 +72,6 @@ typedef struct {
 
 #define UART_S1_TC_MASK                          (0x40U)
 
+#define UART_C2_RE_MASK                          (0x4U)
+
 #endif

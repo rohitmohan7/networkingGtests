@@ -16,22 +16,31 @@ void l1Init(UART_Type* UARTPtr[MAX_PORT]) {
 
 	for (int port = 0; port < MAX_PORT; port++) {
 		UART[port] = UARTPtr[port];
+		UART[port]->C2 |= (UART_C2_RE_MASK | UART_C2_RIE_MASK);
 		txIndex[port] = 0;
 		rxIndex[port] = 0;
 		//init registers
 	}
 }
 
-void l1UARTTransferStopTx(UART_Type* UART) {
-	UART->C2 &= ~((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK);
+void l1UARTTransferStopTx(UART_Type* UARTptr) {
+	UARTptr->C2 &= ~((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK);
 }
 
-void l1AbortTx(UART_Type* UART, uint8_t port) {
-	l1UARTTransferStopTx(UART);
+void l1AbortTx(UART_Type* UARTptr, uint8_t port) {
+	txIndex[port] = 0;
+	rxIndex[port] = 0;
+	l1UARTTransferStopTx(UARTptr);
 	l2AbortTx(port);
 }
 
-static void l1UARTReadNonBlocking(UART_Type* base, uint8_t* data, size_t length)
+void l1TxCmplt(uint8_t port) {
+	txIndex[port] = 0;
+	rxIndex[port] = 0;
+	l2TxCmplt(port);
+}
+
+static void l1UARTReadNonBlocking(UART_Type* UARTptr, uint8_t* data, size_t length)
 {
 	assert(data != NULL);
 
@@ -41,18 +50,18 @@ static void l1UARTReadNonBlocking(UART_Type* base, uint8_t* data, size_t length)
 	peripheral to write. */
 	for (i = 0; i < length; i++)
 	{
-		data[i] = base->D;
+		data[i] = UARTptr->D;
 	}
 }
 
-void l1Rx(UART_Type* UART, uint8_t port) {
+void l1Rx(UART_Type* UARTptr, uint8_t port) {
 	// Tx from layer 2 packets
 	uint8_t  len;
-	uint8_t  rxLen = UART->RCFIFO;
+	uint8_t  rxLen = UARTptr->RCFIFO;
 	do {
 		uint8_t* ptr;
 		len = l2GetRxPkt(port, ptr, rxLen, rxIndex[port]); // return remaining len
-		l1UARTReadNonBlocking(UART, ptr, len);
+		l1UARTReadNonBlocking(UARTptr, ptr, len);
 		rxLen -= len;
 		rxIndex[port] += len;
 	} while (len > 0 && rxLen > 0);
@@ -63,7 +72,7 @@ void l1Rx(UART_Type* UART, uint8_t port) {
 }
 
 #ifndef UNIT_TEST
-static void l1UARTWriteNonBlocking(const uint8_t port, const uint8_t* data, size_t length)
+static void l1UARTWriteNonBlocking(UART_Type* UARTptr, const uint8_t* data, size_t length)
 {
 	assert(data != NULL);
 
@@ -73,13 +82,13 @@ static void l1UARTWriteNonBlocking(const uint8_t port, const uint8_t* data, size
 	peripheral to write. */
 	for (i = 0; i < length; i++)
 	{
-		UART[port]->D = data[i];
+		UARTptr->D = data[i];
 	}
 }
 #endif
 
-void l1Tx(UART_Type* UART, uint8_t port) {
-	uint8_t  txLen = UART_FIFO_SIZE - UART->TCFIFO;
+void l1Tx(UART_Type* UARTptr, uint8_t port) {
+	uint8_t  txLen = UART_FIFO_SIZE - UARTptr->TCFIFO;
 	bool txCmplt;
 	do { //  write contigeous buffers into fifo
 		uint8_t* ptr;
@@ -87,23 +96,24 @@ void l1Tx(UART_Type* UART, uint8_t port) {
 
 		txCmplt = l2GetTxPkt(port, &ptr, &len, txIndex[port]); // return remaining len
 		uint8_t txLenMin = min(len, txLen);
-		l1UARTWriteNonBlocking(port, ptr, txLenMin);
-
 		txLen -= txLenMin;
 		txIndex[port] += txLenMin;
+		l1UARTWriteNonBlocking(UARTptr, ptr, txLenMin);
+		
 	} while (txLen > 0 && !txCmplt);
 	/* Enable transmitter interrupt. */
 	if (txCmplt) {
 		/* TX register empty interrupt */
-		UART->C2 |= (UART_C2_TIE_MASK | UART_C2_TE_MASK); // start Tx
+		UARTptr->C2 |= (UART_C2_TIE_MASK | UART_C2_TE_MASK); // start Tx
 	}
 	else {
 		/*enable transmission complete interrupt. */
-		UART->C2 |= (UART_C2_TCIE_MASK | UART_C2_TE_MASK);
+		UARTptr->C2 |= (UART_C2_TCIE_MASK | UART_C2_TE_MASK);
 	}
 }
 
-static bool l1UARTCmpNonBlocking(UART_Type* base, uint8_t* data, size_t length) {
+#ifndef UNIT_TEST
+static bool l1UARTCmpNonBlocking(UART_Type* UARTptr, uint8_t* data, size_t length) {
 	assert(data != NULL);
 
 	size_t i;
@@ -112,7 +122,7 @@ static bool l1UARTCmpNonBlocking(UART_Type* base, uint8_t* data, size_t length) 
 	peripheral to write. */
 	for (i = 0; i < length; i++)
 	{
-		uint8_t rxData = base->D;
+		uint8_t rxData = UARTptr->D;
 		if (data[i] != rxData) {
 			return false;
 		}
@@ -120,47 +130,56 @@ static bool l1UARTCmpNonBlocking(UART_Type* base, uint8_t* data, size_t length) 
 
 	return true;
 }
+#endif
 
-void validateTxEcho(UART_Type* UART, uint8_t port, uint8_t count) {
+void validateTxEcho(UART_Type* UARTptr, uint8_t port, uint8_t count) {
 	bool txCmplt;
 	do { //  write contigeous buffers into fifo
 		uint8_t* ptr;
 		uint8_t  len;
 
-		txCmplt = l2GetTxPkt(port, ptr, &len, rxIndex); // return remaining len
+		txCmplt = l2GetTxPkt(port, &ptr, &len, rxIndex[port]); // return remaining len
 		uint8_t rxLenMin = min(len, count);
 
-		bool valid = l1UARTCmpNonBlocking(UART, ptr, rxLenMin);
+		bool valid = l1UARTCmpNonBlocking(UARTptr, ptr, rxLenMin);
 
 		count -= len;
 		rxIndex[port] += len;
 
-		if (txCmplt && count > 0) { // shouldnt be here since validateTxEcho is invoked when (rxIndex + count) <= txIndex but just incase
-			l1AbortTx(UART, port);
+		if (!valid || (txCmplt && count > 0)) { // shouldnt be here since validateTxEcho is invoked when (rxIndex + count) <= txIndex but just incase
+			l1AbortTx(UARTptr, port);
 			return;
+		}
+
+		if (txCmplt) {
+			l1TxCmplt(port);
 		}
 
 	} while (count > 0);
 }
 
-void l1TransferHandleIRQ(UART_Type* UART, uint8_t instance) {
+void l1TransferHandleIRQ(UART_Type* UARTptr, uint8_t instance) {
 	uint8_t port = instance == 3 ? 0 : 1;
 
-	uint8_t status = UART->S1;
-	uint8_t cntrl = UART->C2;
+	uint8_t status = UARTptr->S1;
+	uint8_t cntrl = UARTptr->C2;
 	
 	if (((UART_S1_RDRF_MASK & status) != 0U) && ((UART_C2_RIE_MASK & cntrl) != 0U)) {
-		uint8_t count = UART->RCFIFO;
+		uint8_t count = UARTptr->RCFIFO;
 		// validate echo
-		if ((rxIndex + count) > txIndex[port]) { // tx packet
+		if ((rxIndex[port] + count) > txIndex[port]) { // tx packet
 			if (cntrl & UART_C2_TE_MASK) { // recieved more packets echo will tx still active abort
-				l1AbortTx(UART, port);
+				l1AbortTx(UARTptr, port);
 			}
 			else { // proc rx
-
+				// validate up to tx index first 
+				if (rxIndex[port] < txIndex[port]) {
+					validateTxEcho(UARTptr, port, txIndex[port]);
+				}
+				l1Rx(UARTptr, port);
 			}
 		} else {
-			validateTxEcho(UART, port, count);
+			validateTxEcho(UARTptr, port, count);
 		}
 
 		//if (rx_index > tx_index) {
@@ -168,7 +187,7 @@ void l1TransferHandleIRQ(UART_Type* UART, uint8_t instance) {
 		//}
 		
 		// first reset L2 rx timer
-		l1Rx(UART, port);
+		//
 
 		//if (r) {
 
@@ -176,13 +195,13 @@ void l1TransferHandleIRQ(UART_Type* UART, uint8_t instance) {
 	}
 
 	/* Send data register empty and the interrupt is enabled. */
-	if (((UART_S1_TDRE_MASK & status) != 0U) && ((UART->C2 & UART_C2_TIE_MASK) != 0U)) {
-		l1Tx(UART, port);
+	if (((UART_S1_TDRE_MASK & status) != 0U) && ((UARTptr->C2 & UART_C2_TIE_MASK) != 0U)) {
+		l1Tx(UARTptr, port);
 	}
 
 	/* Transmission complete and the interrupt is enabled. */
-	if ((0U != (UART_S1_TC_MASK & status)) && (0U != (UART->C2 & UART_C2_TCIE_MASK))) {
-		l1UARTTransferStopTx(UART);
+	if ((0U != (UART_S1_TC_MASK & status)) && (0U != (UARTptr->C2 & UART_C2_TCIE_MASK))) {
+		l1UARTTransferStopTx(UARTptr);
 		//l2TxCmplt(port);
 	}
 }

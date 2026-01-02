@@ -1,5 +1,4 @@
 ﻿#include "layer2.h"
-#include "layer3.h"
 #include "network.h"
 
 bool mst_token[MAX_PORT];
@@ -174,6 +173,15 @@ void l2SendMst(uint8_t port, uint8_t addr) {
 	l1StartTx(port);
 }
 
+
+void l2SendPdu(uint8_t port, bool mstPass, uint8_t addr) {
+	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
+	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_PDU | (mstPass? L2_PKT_TYPE_MST: 0);
+	l2TxPktDesc[port].time = 0xFF;
+
+	//l2TxPktDesc->l2TxPkt.crc =
+	l1StartTx(port);
+}
 void l2TxRetry(uint8_t port) {
 	l2TxPktDesc[port].time = 0xFF;
 	l2TxPktDesc[port].retry++;
@@ -272,7 +280,14 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 			if (mst_token[port]) {
 				if (l2TxPktDesc[port].l2TxPkt.hdr.type == L2_PKT_TYPE_INVALID) {// pas MST token immediatly no packet to send
 					// first request pkt from l3
-					l2SendMst(port, getNxtMst(port, port_addr[port]));
+					bool passMST;
+					uint8_t addr;
+					if (getl3Pkt(&l2TxPktDesc[port].l2TxPkt, &passMST, &addr, port)) {
+						l2SendPdu(port, passMST, addr);
+					}
+					else {
+						l2SendMst(port, getNxtMst(port, port_addr[port]));
+					}
 				}
 			}
 

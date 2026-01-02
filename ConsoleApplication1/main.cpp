@@ -1459,7 +1459,6 @@ extern "C" bool l1UARTCmpNonBlocking(UART_Type* UART, const uint8_t* data, size_
     return  g_mock->l1UARTCmpNonBlocking(UART, data, length);
 }
 
-#if 0
 TEST_P(MultiHop, addr) {
     for (int port = 0; port < MAX_PORT; port++) {
         EXPECT_EQ(port_addr[port], GetParam().portAddr[port]);
@@ -1551,7 +1550,6 @@ TEST_P(MultiHop, mstPassFail) {
         }
     } 
 }
-#endif
 
 TEST_P(MultiHop, mstPassMsg) {
     MockUart mock;

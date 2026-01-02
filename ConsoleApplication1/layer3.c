@@ -9,3 +9,7 @@ void l3Init() {
 	//memset(port_ip, 0, sizeof port_ip);
    // setPortAddr();
 }
+
+bool getl3Pkt(struct L2Pkt* l2pkt, bool* xferMst, uint8_t* addr, uint8_t port) {
+	return false;
+}

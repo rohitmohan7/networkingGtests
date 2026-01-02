@@ -1,4 +1,5 @@
-﻿#include "global.h"
+﻿#if 0
+#include "global.h"
 #include "allocator.h"
 #include "layer3.h"
 #include "layer4.h"
@@ -71,3 +72,4 @@ void scheduler() { // check streams enqueue
         }
     }
 }
+#endif

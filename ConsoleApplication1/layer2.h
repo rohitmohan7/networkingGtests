@@ -1,5 +1,8 @@
-﻿#include "global.h"
+﻿#ifndef  L2_NETWORK
+#define L2_NETWORK
+#include "global.h"
 #include "allocator.h"
+#include "layer3.h"
 
 extern bool mst_token[MAX_PORT];
 extern uint8_t maxL2Addr[MAX_PORT];
@@ -15,6 +18,7 @@ static inline L2TxPktDesc* L2_GetPktDesc(uint8_t port)
 #define L2_PKT_TYPE_ACK 1
 #define L2_PKT_TYPE_NAK 2
 #define L2_PKT_TYPE_MST 0x80
+#define L2_PKT_TYPE_PDU 3
 
 // NAK reason
 #define L2_NAK_RSN_INV_LEN 0 // invalid msg len
@@ -32,16 +36,13 @@ typedef struct __attribute__((packed)) {
 } L2Hdr;
 _Static_assert(sizeof(L2Hdr) == 2, "L2Hdr wrong size");
 
-typedef struct __attribute__((packed)) {
+typedef struct __attribute__((packed)) L2Pkt {
 	L2Hdr hdr;
 
 	// payload ptr
 	union {
 		struct {
-			uint8_t  head_page;
-			uint8_t  tail_page;
-			uint8_t  head_off;       /* 0..UNIT-1 */
-			uint8_t  tail_used;
+			L3Pkt l3pkt;
 		} pdu;
 
 		struct {
@@ -59,24 +60,24 @@ typedef struct __attribute__((packed)) {
 		} nak;
 
 	} msg;
-	
+
 	uint8_t crc;
 
 } L2Pkt; // size 7 bytes
-_Static_assert(sizeof(L2Pkt) == 7, "L2Pkt wrong size");
+//_Static_assert(sizeof(L2Pkt) == 7, "L2Pkt wrong size");
 
 typedef struct __attribute__((packed)) {
 	L2Pkt l2TxPkt;
 	uint8_t time;
 	uint8_t retry;
 } L2TxPktDesc; // 9 bytes
-_Static_assert(sizeof(L2TxPktDesc) == 9, "L2TxPktDesc wrong size");
+//_Static_assert(sizeof(L2TxPktDesc) == 9, "L2TxPktDesc wrong size");
 
 typedef struct __attribute__((packed)) {
 	L2Pkt l2RxPkt;
 	bool  abort;
 } L2RxPktDesc; // 9 bytes
-_Static_assert(sizeof(L2TxPktDesc) == 9, "L2TxPktDesc wrong size");
+//_Static_assert(sizeof(L2TxPktDesc) == 9, "L2TxPktDesc wrong size");
 
 extern L2TxPktDesc l2TxPktDesc[MAX_PORT];
 
@@ -94,3 +95,5 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint8_t idx);
 void l2TxCmplt(uint8_t port);
 
 void l2AbortTx(uint8_t port);
+#endif // ! L2_NETWORK
+

@@ -105,7 +105,7 @@
     <Link>
       <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(Link.AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalOptions>-Wl,--whole-archive /usr/local/lib/libgtest.a -Wl,--whole-archive /usr/local/lib/libgmock.a -Wl,--no-whole-archive -pthread -Wl,--wrap=l1UARTWriteNonBlocking %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>-Wl,--whole-archive /usr/local/lib/libgtest.a -Wl,--whole-archive /usr/local/lib/libgmock.a -Wl,--no-whole-archive -pthread %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

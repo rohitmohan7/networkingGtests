@@ -4,7 +4,7 @@
 
 bool mst_token[MAX_PORT];
 uint16_t l2TmLstRx[MAX_PORT];
-L2PktDesc l2PktDesc[MAX_PORT];
+L2TxPktDesc l2PktDesc[MAX_PORT];
 uint8_t maxL2Addr[MAX_PORT];
 
 void l2Init() {
@@ -16,7 +16,16 @@ void l2Init() {
 
 void l2TxCmplt(uint8_t port) {
 	// start timer 
-	l2PktDesc[port].time = 0;
+
+	if (l2PktDesc[port].l2Pkt.hdr.type == L2_PKT_TYPE_ACK ||
+		l2PktDesc[port].l2Pkt.hdr.type == L2_PKT_TYPE_NAK) {
+		// if its an ACK/NAK response remove msg
+		l2PktDesc[port].time = 0xFF;
+		l2PktDesc[port].l2Pkt.hdr.type = L2_PKT_TYPE_INVALID;
+	}
+	else {
+		l2PktDesc[port].time = 0x0;
+	}
 
 #if 0
 	switch (l2PktDesc[port].l2Pkt.hdr.type) {
@@ -56,7 +65,13 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint8_t idx) {
 }
 
 uint8_t l2GetRxPkt(uint8_t port, uint8_t* ptr, uint8_t len, uint8_t idx) {
+	/* */
+	if (l2TmLstRx[port] > 1.5 && l2TmLstRx[port] < 3.5) { // abort Rx
 
+	}
+
+
+	l2TmLstRx[port] = 0;
 }
 
 uint8_t getNxtMst(uint8_t port, uint8_t addr) {
@@ -89,7 +104,6 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 			continue;
 		}
 
-		l2TmLstRx[port]+= ms;
 		if (l2PktDesc[port].time != 0xFF) { // prevent rollover
 			uint8_t t = l2PktDesc[port].time;
 			l2PktDesc[port].time = (ms > (0xFFu - t)) ? 0xFF : (uint8_t)(t + ms);
@@ -98,8 +112,11 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 				l2PktDesc[port].time > (LINE_SILENT / 2)) { // retry with next mst
 				l2SendMst(port, l2PktDesc[port].l2Pkt.msg.mst.nextMst);
 			}
+			l2TmLstRx[port] = 0; // start Rx timer after Tx has been acked
 
-		} // increment tx timer
+		} else {
+			l2TmLstRx[port] += ms;
+		}// increment tx timer
 
 		if (l2TmLstRx[port] > (((uint8_t)port_addr[port]) * LINE_SILENT)) {
 			mst_token[port] = true;

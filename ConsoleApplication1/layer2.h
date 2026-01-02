@@ -5,7 +5,7 @@ extern bool mst_token[MAX_PORT];
 extern uint8_t maxL2Addr[MAX_PORT];
 
 #if 0
-static inline L2PktDesc* L2_GetPktDesc(uint8_t port)
+static inline L2TxPktDesc* L2_GetPktDesc(uint8_t port)
 {
 	return &l2PktDesc[port];
 }
@@ -51,10 +51,10 @@ typedef struct __attribute__((packed)) {
 	L2Pkt l2Pkt;
 	uint8_t time;
 	uint8_t retry;
-} L2PktDesc; // 9 bytes
-_Static_assert(sizeof(L2PktDesc) == 9, "L2Pkt wrong size");
+} L2TxPktDesc; // 9 bytes
+_Static_assert(sizeof(L2TxPktDesc) == 9, "L2Pkt wrong size");
 
-extern L2PktDesc l2PktDesc[MAX_PORT];
+extern L2TxPktDesc l2PktDesc[MAX_PORT];
 
 //struct L3Packet;
 //void l2Send(L3Packet packet, uint8_t addr);

@@ -16,6 +16,9 @@ void l2Init() {
 	memset(l2TxPktDesc, 0xFF, sizeof l2TxPktDesc);
 	memset(maxL2Addr, 0xFF, sizeof maxL2Addr);
 	memset(l2RxPktDesc, 0xFF, sizeof l2RxPktDesc);
+	for (int port = 0; port < MAX_PORT; port++) {
+		l2RxPktDesc[port].abort = false;
+	}
 }
 
 void l2TxCmplt(uint8_t port) {
@@ -181,6 +184,8 @@ void l2TxRetry(uint8_t port) {
 }
 
 void l2CmtRx(port) {
+	l1RxCmplt(port);
+
 	if (l2RxPktDesc[port].abort) {
 		l2RxPktDesc[port].abort = false;
 		return;
@@ -193,7 +198,7 @@ void l2CmtRx(port) {
 		return;
 	}
 
-	bool crcValid = l2RxPktDesc[port].l2RxPkt.crc != 0xFF;
+	bool crcValid = l2RxPktDesc[port].l2RxPkt.crc == 0xFF;
 	// validate CRC TODO
 	if (mst_token[port]) {
 		if (!crcValid) {
@@ -212,7 +217,7 @@ void l2CmtRx(port) {
 			return;
 		}
 	}
-	else {
+	else if (!crcValid) {
 		l2SendNak(port, L2_NAK_RSN_INV_CRC);
 		return;
 	}
@@ -223,7 +228,11 @@ void l2CmtRx(port) {
 		break;
 	case L2_PKT_TYPE_ACK: // not for slave
 		l2TxPktDesc[port].time = 0xFF; // reset msg timer
-		// TODO L3 ACK
+		// FOR NOW LET L3 ACK
+#ifndef TRANSPORT_ACK
+
+#endif
+
 		l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
 		break;
 	case L2_PKT_TYPE_NAK: // not applicable for slave
@@ -261,9 +270,8 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 		if (l2TmLstRx[port] > INTER_FRAME_SILENCE) {
 			l2CmtRx(port);
 			if (mst_token[port]) {
-				// here request packet from l3
-
 				if (l2TxPktDesc[port].l2TxPkt.hdr.type == L2_PKT_TYPE_INVALID) {// pas MST token immediatly no packet to send
+					// first request pkt from l3
 					l2SendMst(port, getNxtMst(port, port_addr[port]));
 				}
 			}

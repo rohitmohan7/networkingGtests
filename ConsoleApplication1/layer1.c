@@ -12,19 +12,23 @@ static uint8_t rxIndex[MAX_PORT];
 
 static inline uint8_t min(uint8_t a, uint8_t b) { return (a < b) ? a : b; }
 
+void l1UARTTransferStopTx(UART_Type* UARTptr) {
+	UARTptr->C2 &= ~((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK);
+}
+
 void l1Init(UART_Type* UARTPtr[MAX_PORT]) {
 
 	for (int port = 0; port < MAX_PORT; port++) {
 		UART[port] = UARTPtr[port];
 		UART[port]->C2 |= (UART_C2_RE_MASK | UART_C2_RIE_MASK);
+
+		// disable tx
+		l1UARTTransferStopTx(UART[port]);
+
 		txIndex[port] = 0;
 		rxIndex[port] = 0;
 		//init registers
 	}
-}
-
-void l1UARTTransferStopTx(UART_Type* UARTptr) {
-	UARTptr->C2 &= ~((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK);
 }
 
 void l1AbortTx(UART_Type* UARTptr, uint8_t port) {
@@ -72,7 +76,6 @@ static bool l1UARTCmpNonBlocking(UART_Type* UARTptr, uint8_t* data, size_t lengt
 
 	return true;
 }
-#endif
 
 static void l1UARTReadNonBlocking(UART_Type* UARTptr, uint8_t* data, size_t length)
 {
@@ -87,6 +90,9 @@ static void l1UARTReadNonBlocking(UART_Type* UARTptr, uint8_t* data, size_t leng
 		data[i] = UARTptr->D;
 	}
 }
+
+#endif
+
 
 static void l1UARTAbortRead(UART_Type* UARTptr)
 {
@@ -172,6 +178,10 @@ void validateTxEcho(UART_Type* UARTptr, uint8_t port, uint8_t count) {
 		}
 
 	} while (count > 0);
+}
+
+void l1RxCmplt(uint8_t port) {
+	rxIndex[port] = 0;
 }
 
 void l1TransferHandleIRQ(UART_Type* UARTptr, uint8_t port) {

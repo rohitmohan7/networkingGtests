@@ -1427,7 +1427,8 @@ TEST_P(MultiHop, addr) {
 
 struct MockUart {
     MOCK_METHOD(void, l1UARTWriteNonBlocking, (UART_Type* UART, const uint8_t* data, size_t length), ());
-    MOCK_METHOD(bool, CmpNonBlocking, (UART_Type* UART, const uint8_t* data, size_t length), ());
+    MOCK_METHOD(bool, l1UARTCmpNonBlocking, (UART_Type* UART, const uint8_t* data, size_t length), ());
+    MOCK_METHOD(void, l1UARTReadNonBlocking, (UART_Type* UART, uint8_t* data, size_t length), ());
 };
 
 static MockUart* g_mock = nullptr;
@@ -1439,20 +1440,31 @@ extern "C" void l1UARTWriteNonBlocking(UART_Type* UART, const uint8_t* data, siz
     g_mock->l1UARTWriteNonBlocking(UART, data, length);
 
     // echo 
-    uint8_t instance = UART== MultiHop::uart_ptrs[0] ? 3 : 4;
-    UART->S1 |= UART_S1_RDRF_MASK;
-    UART->RCFIFO = length;
-    l1TransferHandleIRQ(UART, instance);
+    for (int port = 0; port < MAX_PORT; port++) {
+        if (UART != MultiHop::uart_ptrs[port]) {
+            continue;
+        }
+        UART->S1 |= UART_S1_RDRF_MASK;
+        UART->RCFIFO = length;
+        l1TransferHandleIRQ(UART, port);
+        break;
+    }
+}
+
+extern "C" void l1UARTReadNonBlocking(UART_Type* UART, uint8_t* data, size_t length)
+{
+    ASSERT_NE(g_mock, nullptr);
+    g_mock->l1UARTReadNonBlocking(UART, data, length);
 }
 
 extern "C" bool l1UARTCmpNonBlocking(UART_Type* UART, const uint8_t* data, size_t length)
 {
     EXPECT_NE(g_mock, nullptr);
-    return  g_mock->CmpNonBlocking(UART, data, length);
+    return  g_mock->l1UARTCmpNonBlocking(UART, data, length);
 }
 
 
-TEST_P(MultiHop, mstPass) {
+TEST_P(MultiHop, mstPassFail) {
 
     MockUart mock;
     g_mock = &mock;
@@ -1515,7 +1527,7 @@ TEST_P(MultiHop, mstPass) {
                     .RetiresOnSaturation();
 
                 // echo
-                EXPECT_CALL(mock, CmpNonBlocking(uart_ptrs[port], testing::NotNull(), expectedSize))
+                EXPECT_CALL(mock, l1UARTCmpNonBlocking(uart_ptrs[port], testing::NotNull(), expectedSize))
                     .Times(1)
                     .WillOnce(testing::Invoke([expected](UART_Type* UART, const uint8_t* data, size_t len) {
                     EXPECT_EQ(0, std::memcmp(data, expected.data(), expected.size()));
@@ -1537,6 +1549,42 @@ TEST_P(MultiHop, mstPass) {
         }
     } 
 }
+
+#if 0
+TEST_P(MultiHop, mstPassMsg) {
+    MockUart mock;
+    g_mock = &mock;
+
+    for (int port = 0; port < MAX_PORT; port++) {
+        std::array<uint8_t, 3> pkt{ { GetParam().portAddr[port] & 0x00FF, L2_PKT_TYPE_MST, 0xFF } };
+
+        uart_ptrs[port]->S1 |= UART_S1_RDRF_MASK;
+        uart_ptrs[port]->RCFIFO = pkt.size();
+
+        // call to copy header
+        EXPECT_CALL(mock, l1UARTReadNonBlocking(uart_ptrs[port], testing::NotNull(), sizeof(L2Hdr)))
+            .Times(1)
+            .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
+            std::memcpy(data, pkt.data(), len);
+                }))
+            .RetiresOnSaturation();
+
+        l1TransferHandleIRQ(uart_ptrs[port], port);
+
+
+#if 0
+        EXPECT_CALL(mock, l1UARTReadNonBlocking(uart_ptrs[port], testing::NotNull(), sizeof(L2Pkt::crc)))
+            .Times(1)
+            .WillOnce(testing::Invoke([pkt](UART_Type* UART, const uint8_t* data, size_t len) {
+                memcpy(data, pkt.data()+ sizeof(L2Hdr), len);
+                }))
+            .RetiresOnSaturation();
+#endif
+    }
+
+
+}
+#endif
 
 //TEST_P(MultiHop, l2test) {
 //

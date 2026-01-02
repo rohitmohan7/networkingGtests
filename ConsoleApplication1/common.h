@@ -62,6 +62,8 @@ typedef struct {
 #define UART_C2_TIE_MASK                         (0x80U)
 #define UART_C2_TCIE_MASK                        (0x40U)
 
+#define UART_CFIFO_RXFLUSH_MASK                  (0x40U)
+
 /*! C2_RIE - Receiver Full Interrupt or DMA Transfer Enable
  *  0b0..RDRF interrupt and DMA transfer requests disabled.
  *  0b1..RDRF interrupt or DMA transfer requests enabled.

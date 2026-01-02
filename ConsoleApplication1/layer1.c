@@ -40,37 +40,6 @@ void l1TxCmplt(uint8_t port) {
 	l2TxCmplt(port);
 }
 
-static void l1UARTReadNonBlocking(UART_Type* UARTptr, uint8_t* data, size_t length)
-{
-	assert(data != NULL);
-
-	size_t i;
-
-	/* The Non Blocking read data API assume user have ensured there is enough space in
-	peripheral to write. */
-	for (i = 0; i < length; i++)
-	{
-		data[i] = UARTptr->D;
-	}
-}
-
-void l1Rx(UART_Type* UARTptr, uint8_t port) {
-	// Tx from layer 2 packets
-	uint8_t  len;
-	uint8_t  rxLen = UARTptr->RCFIFO;
-	do {
-		uint8_t* ptr;
-		len = l2GetRxPkt(port, ptr, rxLen, rxIndex[port]); // return remaining len
-		l1UARTReadNonBlocking(UARTptr, ptr, len);
-		rxLen -= len;
-		rxIndex[port] += len;
-	} while (len > 0 && rxLen > 0);
-
-	if (rxLen > 0) { // not enough mem to write
-
-	}
-}
-
 #ifndef UNIT_TEST
 static void l1UARTWriteNonBlocking(UART_Type* UARTptr, const uint8_t* data, size_t length)
 {
@@ -85,7 +54,74 @@ static void l1UARTWriteNonBlocking(UART_Type* UARTptr, const uint8_t* data, size
 		UARTptr->D = data[i];
 	}
 }
+
+static bool l1UARTCmpNonBlocking(UART_Type* UARTptr, uint8_t* data, size_t length) {
+	assert(data != NULL);
+
+	size_t i;
+
+	/* The Non Blocking read data API assume user have ensured there is enough space in
+	peripheral to write. */
+	for (i = 0; i < length; i++)
+	{
+		uint8_t rxData = UARTptr->D;
+		if (data[i] != rxData) {
+			return false;
+		}
+	}
+
+	return true;
+}
 #endif
+
+static void l1UARTReadNonBlocking(UART_Type* UARTptr, uint8_t* data, size_t length)
+{
+	assert(data != NULL);
+
+	size_t i;
+
+	/* The Non Blocking read data API assume user have ensured there is enough space in
+	peripheral to write. */
+	for (i = 0; i < length; i++)
+	{
+		data[i] = UARTptr->D;
+	}
+}
+
+static void l1UARTAbortRead(UART_Type* UARTptr)
+{
+	while ((UARTptr->S1 & UART_S1_RDRF_MASK) != 0U)
+	{
+		(void)UARTptr->D;
+	}
+
+	/* Flush FIFO */
+	UARTptr->CFIFO |= UART_CFIFO_RXFLUSH_MASK;
+}
+
+void l1Rx(UART_Type* UARTptr, uint8_t port) {
+	// Tx from layer 2 packets
+	uint8_t  rxLen = UARTptr->RCFIFO;
+	do {
+		uint8_t* ptr;
+		uint8_t len = l2GetRxPkt(port, &ptr, rxLen, rxIndex[port]); // return remaining len
+
+		if (len == 0) {
+			// abort Rx
+			rxIndex[port] = 0;
+			l1UARTAbortRead(UARTptr);
+			return;
+		}
+
+		l1UARTReadNonBlocking(UARTptr, ptr, len);
+		rxLen -= len;
+		rxIndex[port] += len;
+	} while (rxLen > 0);
+
+	if (rxLen > 0) { // not enough mem to write
+
+	}
+}
 
 void l1Tx(UART_Type* UARTptr, uint8_t port) {
 	uint8_t  txLen = UART_FIFO_SIZE - UARTptr->TCFIFO;
@@ -112,26 +148,6 @@ void l1Tx(UART_Type* UARTptr, uint8_t port) {
 	}
 }
 
-#ifndef UNIT_TEST
-static bool l1UARTCmpNonBlocking(UART_Type* UARTptr, uint8_t* data, size_t length) {
-	assert(data != NULL);
-
-	size_t i;
-
-	/* The Non Blocking read data API assume user have ensured there is enough space in
-	peripheral to write. */
-	for (i = 0; i < length; i++)
-	{
-		uint8_t rxData = UARTptr->D;
-		if (data[i] != rxData) {
-			return false;
-		}
-	}
-
-	return true;
-}
-#endif
-
 void validateTxEcho(UART_Type* UARTptr, uint8_t port, uint8_t count) {
 	bool txCmplt;
 	do { //  write contigeous buffers into fifo
@@ -146,7 +162,7 @@ void validateTxEcho(UART_Type* UARTptr, uint8_t port, uint8_t count) {
 		count -= len;
 		rxIndex[port] += len;
 
-		if (!valid || (txCmplt && count > 0)) { // shouldnt be here since validateTxEcho is invoked when (rxIndex + count) <= txIndex but just incase
+		if (!valid) {
 			l1AbortTx(UARTptr, port);
 			return;
 		}
@@ -158,9 +174,7 @@ void validateTxEcho(UART_Type* UARTptr, uint8_t port, uint8_t count) {
 	} while (count > 0);
 }
 
-void l1TransferHandleIRQ(UART_Type* UARTptr, uint8_t instance) {
-	uint8_t port = instance == 3 ? 0 : 1;
-
+void l1TransferHandleIRQ(UART_Type* UARTptr, uint8_t port) {
 	uint8_t status = UARTptr->S1;
 	uint8_t cntrl = UARTptr->C2;
 	
@@ -168,7 +182,7 @@ void l1TransferHandleIRQ(UART_Type* UARTptr, uint8_t instance) {
 		uint8_t count = UARTptr->RCFIFO;
 		// validate echo
 		if ((rxIndex[port] + count) > txIndex[port]) { // tx packet
-			if (cntrl & UART_C2_TE_MASK) { // recieved more packets echo will tx still active abort
+			if (cntrl & UART_C2_TE_MASK) { // recieved more packets than echo while tx still active abort
 				l1AbortTx(UARTptr, port);
 			}
 			else { // proc rx

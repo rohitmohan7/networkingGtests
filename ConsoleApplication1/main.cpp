@@ -1364,7 +1364,7 @@ bool appSend(const uint8_t* data, uint8_t len, uint16_t pos, uint8_t priority)
             const uint32_t base = page_off(s->tail_page) + (uint32_t)s->tail_used;
             for (uint16_t i = 0U; i < take; ++i)
             {
-                g_tx_pool[base + (uint32_t)i] = data[in + i];
+                g_pool[base + (uint32_t)i] = data[in + i];
             }
         }
 

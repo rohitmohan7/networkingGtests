@@ -1,7 +1,7 @@
 ﻿#include "allocator.h"
 
 uint8_t g_next[NUM_PAGES];
-uint8_t   g_tx_pool[POOL_BYTES];
+uint8_t   g_pool[POOL_BYTES];
 uint8_t  g_free_count;
 static uint8_t g_free_head;
 

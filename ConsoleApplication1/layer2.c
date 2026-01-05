@@ -66,6 +66,22 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint8_t idx) {
 		// next is CRC
 		*len += sizeof(l2TxPktDesc[port].l2TxPkt.crc);
 		return true;
+	case L2_PKT_TYPE_PDU:
+		if (idx >= sizeof(L2Hdr)) {
+			idx -= sizeof(L2Hdr);
+			// identify page 
+#if 0
+			uint8_t pg_idx = (idx / UNIT);
+			uint8_t hd_pg = l2TxPktDesc[port].l2TxPkt.msg.pdu.l3pkt.head_page;
+			for (int count = 0; count == pg_idx; count++) {
+				hd_pg = g_next[hd_pg];
+			}
+
+			*ptr = 
+			*len = UNIT;
+#endif
+		}
+		return true;
 	}
 
 	return false;
@@ -282,7 +298,7 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 					// first request pkt from l3
 					bool passMST;
 					uint8_t addr;
-					if (getl3Pkt(&l2TxPktDesc[port].l2TxPkt, &passMST, &addr, port)) {
+					if (getl3Pkt(&l2TxPktDesc[port].l2TxPkt.msg.pdu, &passMST, &addr, port)) {
 						l2SendPdu(port, passMST, addr);
 					}
 					else {

@@ -43,9 +43,7 @@ typedef struct __attribute__((packed)) L2Pkt {
 
 	// payload ptr
 	union {
-		struct {
-			L3Pkt l3pkt;
-		} pdu;
+		L3Pkt pdu;
 
 		struct {
 			uint8_t mstCrc;
@@ -68,7 +66,7 @@ typedef struct __attribute__((packed)) L2Pkt {
 } L2Pkt; // size 7 bytes
 //_Static_assert(sizeof(L2Pkt) == 7, "L2Pkt wrong size");
 
-#define L2_FRAME_SIZE (RS485_FRAME_SIZE - (sizeof(L2Hdr) + sizeof(((L2Pkt*)0)->crc)))
+
 
 typedef struct __attribute__((packed)) {
 	L2Pkt l2TxPkt;

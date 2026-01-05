@@ -1,6 +1,7 @@
 ﻿#include "global.h"
 #include "layer1.h"
 #include "layer2.h"
+#include "network.h"
 #include <assert.h>
 
 #define UART_FIFO_SIZE 128
@@ -9,8 +10,6 @@ UART_Type* UART[MAX_PORT];
 
 static uint8_t txIndex[MAX_PORT];
 static uint8_t rxIndex[MAX_PORT];
-
-static inline uint8_t min(uint8_t a, uint8_t b) { return (a < b) ? a : b; }
 
 void l1UARTTransferStopTx(UART_Type* UARTptr) {
 	UARTptr->C2 &= ~((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK);

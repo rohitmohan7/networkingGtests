@@ -79,12 +79,12 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint8_t idx, uint8_
 		}
 		else {
 			// msg offset
-			uint8_t globalOffset = idx - sizeof(PduHdr);
 
-			const uint16_t base = pageOff(pdu_head) + (uint16_t)pdu_hd_off[port];
+			const uint16_t base = pageOff(pdu_head[port]) + (uint16_t)pdu_hd_off[port];
 			// start with first page
 			*ptr = &g_pool[base];
 			*len = (UNIT - l4pkt->head_off);
+			return true;
 
 			if (l4pkt->head_page == l4pkt->tail_page) {
 				*len -= l4pkt->tail_used;

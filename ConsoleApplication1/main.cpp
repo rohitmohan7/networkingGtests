@@ -1705,10 +1705,15 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
                 }))
             .RetiresOnSaturation();
 
+
         uint8_t pageSize = ceilPages(MSG_SIZE);
 
         for (int page = 0; page < pageSize; page++) {
-            EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart_ptrs[port], testing::NotNull(), sizeof(PduHdr)))
+            uint8_t size = UNIT;
+            if (page == pageSize - 1) {
+                size = UNIT % MSG_SIZE;
+            }
+            EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart_ptrs[port], testing::NotNull(), size))
                 .Times(1)
                 .WillOnce(testing::Invoke([msg, page](UART_Type* UART, const uint8_t* data, size_t len) {
                 EXPECT_EQ(0, std::memcmp(data, (msg.data() + (page*UNIT)), len));
@@ -1716,14 +1721,16 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
                 .RetiresOnSaturation();
 
             // echo
-            EXPECT_CALL(mock, l1UARTCmpNonBlocking(uart_ptrs[port], testing::NotNull(), sizeof(PduHdr)))
+            EXPECT_CALL(mock, l1UARTCmpNonBlocking(uart_ptrs[port], testing::NotNull(), size))
                 .Times(1)
                 .WillOnce(testing::Invoke([msg, page](UART_Type* UART, const uint8_t* data, size_t len) {
                 EXPECT_EQ(0, std::memcmp(data, (msg.data() + (page * UNIT)), len));
                 return true;
                     }))
                 .RetiresOnSaturation();
+            break;
         }
+
     }
     netTick(INTER_FRAME_SILENCE + 1);
 

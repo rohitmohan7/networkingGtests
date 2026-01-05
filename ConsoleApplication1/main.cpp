@@ -1728,7 +1728,6 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
                 return true;
                     }))
                 .RetiresOnSaturation();
-            break;
         }
 
     }

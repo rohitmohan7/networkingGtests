@@ -84,9 +84,8 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint8_t idx, uint8_
 			// start with first page
 			*ptr = &g_pool[base];
 			*len = (UNIT - l4pkt->head_off);
-			return true;
 
-			if (l4pkt->head_page == l4pkt->tail_page) {
+			if (pdu_head[port] == l4pkt->tail_page) {
 				*len -= l4pkt->tail_used;
 
 				if (txFifoLen >= *len) { // all data will be sent in this single Tx

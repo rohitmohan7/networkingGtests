@@ -135,7 +135,7 @@ void l1Tx(UART_Type* UARTptr, uint8_t port) {
 		uint8_t* ptr;
 		uint8_t  len;
 
-		txCmplt = l2GetTxPkt(port, &ptr, &len, txIndex[port]); // return remaining len
+		txCmplt = l2GetTxPkt(port, &ptr, &len, txIndex[port], txLen); // return remaining len
 		uint8_t txLenMin = min(len, txLen);
 		txLen -= txLenMin;
 		txIndex[port] += txLenMin;
@@ -159,7 +159,7 @@ void validateTxEcho(UART_Type* UARTptr, uint8_t port, uint8_t count) {
 		uint8_t* ptr;
 		uint8_t  len;
 
-		txCmplt = l2GetTxPkt(port, &ptr, &len, rxIndex[port]); // return remaining len
+		txCmplt = l2GetTxPkt(port, &ptr, &len, rxIndex[port], count); // return remaining len
 		uint8_t rxLenMin = min(len, count);
 
 		bool valid = l1UARTCmpNonBlocking(UARTptr, ptr, rxLenMin);

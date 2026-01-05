@@ -1,5 +1,5 @@
-﻿#include "layer2.h"
-#include "network.h"
+﻿#include "network.h"
+#include "layer2.h"
 
 bool mst_token[MAX_PORT];
 uint16_t l2TmLstRx[MAX_PORT];
@@ -54,7 +54,10 @@ void l2AbortTx(uint8_t port) {
 }*/
 
 
-bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint8_t idx) {
+bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint8_t idx, uint8_t txFifoLen) {
+
+	static uint8_t pdu_head[MAX_PORT];
+	static uint8_t pdu_hd_off[MAX_PORT];
 
 	if (idx < sizeof(L2Hdr)) { // give header
 		*ptr = ((uint8_t *)&l2TxPktDesc[port].l2TxPkt.hdr) + idx;
@@ -67,21 +70,40 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint8_t idx) {
 		*len += sizeof(l2TxPktDesc[port].l2TxPkt.crc);
 		return true;
 	case L2_PKT_TYPE_PDU:
-		if (idx >= sizeof(L2Hdr)) {
-			idx -= sizeof(L2Hdr);
-			// identify page 
-#if 0
-			uint8_t pg_idx = (idx / UNIT);
-			uint8_t hd_pg = l2TxPktDesc[port].l2TxPkt.msg.pdu.l3pkt.head_page;
-			for (int count = 0; count == pg_idx; count++) {
-				hd_pg = g_next[hd_pg];
-			}
-
-			*ptr = 
-			*len = UNIT;
-#endif
+		L4Pkt* l4pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu.l4Pkt;
+		if (idx < sizeof(PduHdr)) {
+			*len = sizeof(PduHdr) - idx;
+			pdu_head[port] = l4pkt->head_page;
+			pdu_hd_off[port] = l4pkt->head_off;
+			return false;
 		}
-		return true;
+		else {
+			// msg offset
+			uint8_t globalOffset = idx - sizeof(PduHdr);
+
+			const uint16_t base = pageOff(pdu_head) + (uint16_t)pdu_hd_off[port];
+			// start with first page
+			*ptr = &g_pool[base];
+			*len = (UNIT - l4pkt->head_off);
+
+			if (l4pkt->head_page == l4pkt->tail_page) {
+				*len -= l4pkt->tail_used;
+
+				if (txFifoLen >= *len) { // all data will be sent in this single Tx
+					return true;
+				}
+				pdu_hd_off[port] += txFifoLen;
+				return false;
+
+			} else if (*len < txFifoLen) { // we are at the end of current page
+				pdu_head[port] = g_next[pdu_head[port]];
+				if (pdu_head[port] == INVALID_PAGE) {
+					return true;
+				}
+				pdu_hd_off[port] = 0;
+				return false;
+			}
+		}
 	}
 
 	return false;
@@ -252,9 +274,10 @@ void l2CmtRx(port) {
 		break;
 	case L2_PKT_TYPE_ACK: // not for slave
 		l2TxPktDesc[port].time = 0xFF; // reset msg timer
-		// FOR NOW LET L3 ACK
+		
 #ifndef TRANSPORT_ACK
-
+		// FOR NOW LET L3 ACK
+		l3Ack(&l2TxPktDesc[port].l2TxPkt.msg.pdu);
 #endif
 
 		l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;

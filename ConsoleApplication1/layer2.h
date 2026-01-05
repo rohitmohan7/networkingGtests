@@ -38,6 +38,12 @@ typedef struct __attribute__((packed)) {
 } L2Hdr;
 _Static_assert(sizeof(L2Hdr) == 2, "L2Hdr wrong size");
 
+typedef struct {
+	L2Hdr l2hdr;
+	L3Hdr l3hdr;
+	L4Hdr l4hdr;
+} PduHdr;
+
 typedef struct __attribute__((packed)) L2Pkt {
 	L2Hdr hdr;
 
@@ -90,7 +96,7 @@ void l2Init();
 
 void l2Tick(uint8_t ms); // ms is milliseconds since last tick
 
-bool l2GetTxPkt(uint8_t port, uint8_t** ptr, uint8_t* len, uint8_t idx);
+bool l2GetTxPkt(uint8_t port, uint8_t** ptr, uint8_t* len, uint8_t idx, uint8_t txFifoLen);
 
 uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint8_t idx);
 

@@ -11,14 +11,14 @@
 extern uint16_t pos_addr_table[MAX_POS];
 extern uint16_t route_table[MAX_SUBNET];
 
-typedef struct {
+typedef struct __attribute__((packed)) {
 	uint16_t src;
 	uint16_t dst;
 	uint8_t ttl;
 	uint8_t prio;
 } L3Hdr;
 
-typedef struct {
+typedef struct __attribute__((packed)) {
 	L3Hdr hdr;
 	L4Pkt l4Pkt;
 } L3Pkt;
@@ -28,4 +28,6 @@ void l3Init();
 // return L2 addr 
 // xferMst pass MST
 bool getl3Pkt(L3Pkt* l3pkt, bool* xferMst, uint8_t* addr, uint8_t port);
+
+void l3Ack(L3Pkt* l3Pkt);
 #endif

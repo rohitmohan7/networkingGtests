@@ -2,34 +2,72 @@
 #include "layer3.h"
 #include "allocator.h"
 #include "layer2.h"
+#include "network.h"
 
 #define L2_FRAME_SIZE (RS485_FRAME_SIZE - (sizeof(L2Hdr) + sizeof(((L2Pkt*)0)->crc)))
 #define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
 #define L4_FRAME_SIZE (L3_FRAME_SIZE - sizeof(L4Hdr))
 
-static stream_t streams[MAX_POS];
+stream_t streams[MAX_POS];
 
-void initL4() {
+void l4Init() {
 	for (int prio = 0; prio < MAX_PRIORITY; prio++) {
 		for (int pos = 0; pos < MAX_POS; pos++) {
 			stream_t* s = &streams[pos];
 			prio_stream_t* ps = &s->prio[prio];
-			ps->msgLen = 0;
+			ps->msgNo = 0;
+			ps->head_page = INVALID_PAGE;
+			ps->tail_page = INVALID_PAGE;
+			ps->head_off = 0;
+			ps->tail_used = 0;
 		}
 	}
 }
 
-void l4Ack(uint8_t prio, uint16_t dstAddr) {
+void l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr) {
 	for (int pos = 0; pos < MAX_POS; pos++) {
 		stream_t* s = &streams[pos];
-		if (dstAddr == s->dst) {
-			
-
+		if (s->dst != dstAddr) {
+			continue;
 		}
+
+		prio_stream_t* ps = &s->prio[prio];
+
+		// free from allocator
+
+
+		if (l4Pkt->tail_used == UNIT) { // full tail used 
+			ps->head_page = g_next[l4Pkt->tail_page];
+			ps->head_off = 0;
+		}
+		else {
+			ps->head_page = l4Pkt->tail_page;
+			ps->head_off = l4Pkt->tail_used + 1;
+		}
+
+		L4Hdr* hdr = &l4Pkt->hdr;
+		if (hdr->len == 0) {
+			ps->msgNo++; // increment seq number
+
+			ps->msgLen = g_pool[(ps->head_page * UNIT) + (ps->head_off)];
+			ps->head_off++;
+			if (ps->head_off == UNIT) {
+				ps->head_page = g_next[ps->head_page];
+				ps->head_off = 0;
+			}
+
+			ps->msgLen |= (g_pool[(ps->head_page * UNIT) + (ps->head_off)]) << 8;
+			ps->head_off++;
+			if (ps->head_off == UNIT) {
+				ps->head_page = g_next[ps->head_page];
+				ps->head_off = 0;
+			}
+		}
+		break;
 	}
 }
 
-bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr) {
+bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr, uint8_t* gatewayL2Addr) {
 	for (int pos = 0; pos < MAX_POS; pos++) {
 		stream_t* s = &streams[pos];
 		uint8_t gatewaySubnet = (s->gateway & 0xFF00) >> 8;
@@ -42,8 +80,9 @@ bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr)
 		if (ps->head_page == INVALID_PAGE) { // nothing to send
 			continue;
 		}
-		
+
 		*dstAddr = s->dst;
+		*gatewayL2Addr = s->gateway;
 
 		// set hdr
 		L4Hdr* hdr = &l4Pkt->hdr;
@@ -69,29 +108,7 @@ bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr)
 			len -= UNIT;
 		}
 
-#ifndef TRANSPORT_ACK // no need to keep in transport layer if L2 fails to TX it will abort MSG
-		if (l4Pkt->tail_used == UNIT) { // full tail used 
-			ps->head_page = g_next[l4Pkt->tail_page];
-			ps->head_off = 0;
-		} else {
-			ps->head_page = l4Pkt->tail_page;
-			ps->head_off = l4Pkt->tail_used + 1;
-		}
-
-		if (hdr->len == 0) {
-			ps->msgNo++; // increment seq number
-
-			ps->msgLen = g_pool[(ps->head_page * UNIT) + (ps->head_off)];
-			ps->head_off++;
-			if (ps->head_off == UNIT) {
-				ps->head_page = g_next[ps->head_page];
-				ps->head_off = 0;
-			}
-
-			ps->msgLen |= (g_pool[(ps->head_page * UNIT) + (ps->head_off)]) << 8;
-			ps->head_off++;
-		}
-#endif
+		return true;
 	}
 	return false;
 }

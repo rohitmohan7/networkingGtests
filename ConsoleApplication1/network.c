@@ -2,6 +2,8 @@
 #include "layer2.h"
 #include "layer3.h"
 #include "layer1.h"
+#include "layer4.h"
+#include "allocator.h"
 
 uint16_t port_addr[MAX_PORT]; // L3 & L2
 
@@ -27,9 +29,13 @@ void setPortAddr() {
                     continue;
                 }
 
-                if ((topology[pos].subnet[0] == topology[myPos].subnet[port]) ||
-                    (topology[pos].subnet[1] == topology[myPos].subnet[port])) {
-                    l2Addr[port]++;
+                for (int peerPort = 0; peerPort < MAX_PORT; peerPort++) {
+                    if (topology[pos].subnet[peerPort] == topology[myPos].subnet[port]) {
+                        // for now set addr directly (TODO loadbalance equal hops + routing table gateway)
+                        streams[pos].gateway = streams[pos].dst = (topology[pos].subnet[port] << 8) | l2Addr[port];
+                        
+                        l2Addr[port]++;
+                    }
                 }
             }
         }
@@ -44,9 +50,11 @@ void setPortAddr() {
 }
 
 void netInit(UART_Type* UART[MAX_PORT]) {
+    pages_init();
     l1Init(UART);
 	l2Init();
 	l3Init();
+    l4Init();
     setPortAddr();
 }
 

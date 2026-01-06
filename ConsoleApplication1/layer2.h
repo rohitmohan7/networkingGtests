@@ -96,7 +96,7 @@ void l2Init();
 
 void l2Tick(uint8_t ms); // ms is milliseconds since last tick
 
-bool l2GetTxPkt(uint8_t port, uint8_t** ptr, uint8_t* len, uint8_t idx, uint8_t txFifoLen);
+bool l2GetTxPkt(uint8_t port, uint8_t** ptr, uint8_t* len, uint8_t idx, uint8_t txFifoLen, uint8_t xfer);
 
 uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint8_t idx);
 

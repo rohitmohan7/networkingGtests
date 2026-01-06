@@ -52,12 +52,12 @@ void l2AbortTx(uint8_t port) {
 /*void l2Send(L2Packet) {
 
 }*/
+#define XFER_DIR 2 // TX RX
 
+bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint8_t idx, uint8_t txRxFifoLen, uint8_t xfer) {
 
-bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint8_t idx, uint8_t txFifoLen) {
-
-	static uint8_t pdu_head[MAX_PORT];
-	static uint8_t pdu_hd_off[MAX_PORT];
+	static uint8_t tx_pdu_head[XFER_DIR][MAX_PORT];
+	static uint8_t tx_pdu_hd_off[XFER_DIR][MAX_PORT];
 
 	if (idx < sizeof(L2Hdr)) { // give header
 		*ptr = ((uint8_t *)&l2TxPktDesc[port].l2TxPkt.hdr) + idx;
@@ -73,34 +73,37 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint8_t idx, uint8_
 		L4Pkt* l4pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu.l4Pkt;
 		if (idx < sizeof(PduHdr)) {
 			*len = sizeof(PduHdr) - idx;
-			pdu_head[port] = l4pkt->head_page;
-			pdu_hd_off[port] = l4pkt->head_off;
+			tx_pdu_head[xfer][port] = l4pkt->head_page;
+			tx_pdu_hd_off[xfer][port] = l4pkt->head_off;
 			return false;
 		}
 		else {
 			// msg offset
 
-			const uint16_t base = pageOff(pdu_head[port]) + (uint16_t)pdu_hd_off[port];
+			const uint16_t base = pageOff(tx_pdu_head[xfer][port]) + (uint16_t)tx_pdu_hd_off[xfer][port];
 			// start with first page
 			*ptr = &g_pool[base];
 			*len = (UNIT - l4pkt->head_off);
 
-			if (pdu_head[port] == l4pkt->tail_page) {
-				*len -= l4pkt->tail_used;
+			if (tx_pdu_head[xfer][port] == l4pkt->tail_page) {
+				*len -= (UNIT - l4pkt->tail_used);
 
-				if (txFifoLen >= *len) { // all data will be sent in this single Tx
+				if (txRxFifoLen >= *len) { // all data will be sent in this single Tx
 					return true;
 				}
-				pdu_hd_off[port] += txFifoLen;
+				tx_pdu_hd_off[xfer][port] += txRxFifoLen;
 				return false;
 
-			} else if (*len < txFifoLen) { // we are at the end of current page
-				pdu_head[port] = g_next[pdu_head[port]];
-				if (pdu_head[port] == INVALID_PAGE) {
+			} else if (*len <= txRxFifoLen) { // we are at the end of current page
+				tx_pdu_head[xfer][port] = g_next[tx_pdu_head[xfer][port]];
+				if (tx_pdu_head[xfer][port] == INVALID_PAGE) {
 					return true;
 				}
-				pdu_hd_off[port] = 0;
+				tx_pdu_hd_off[xfer][port] = 0;
 				return false;
+			}
+			else {
+				tx_pdu_hd_off[xfer][port] += txRxFifoLen;
 			}
 		}
 	}
@@ -160,6 +163,9 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint8_t idx) {
 	if (idx < sizeof(L2Hdr)) { // give header
 		*ptr = ((uint8_t*)&l2RxPktDesc[port].l2RxPkt.hdr) + idx;
 		len = sizeof(L2Hdr) - idx;
+		if (mst_token[port]) { // give enough space for NAK
+			len += sizeof(l2RxPktDesc[port].l2RxPkt.msg.nak);
+		}
 		return len; // let Hdr finish first
 	}
 

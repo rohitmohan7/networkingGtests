@@ -1711,11 +1711,12 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
         for (int page = 0; page < pageSize; page++) {
             uint8_t size = UNIT;
             if (page == pageSize - 1) {
-                size = UNIT % MSG_SIZE;
+                size = MSG_SIZE % UNIT;
             }
             EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart_ptrs[port], testing::NotNull(), size))
                 .Times(1)
                 .WillOnce(testing::Invoke([msg, page](UART_Type* UART, const uint8_t* data, size_t len) {
+                printf("page: %d, len: %d\n", page);
                 EXPECT_EQ(0, std::memcmp(data, (msg.data() + (page*UNIT)), len));
                     }))
                 .RetiresOnSaturation();
@@ -1734,6 +1735,43 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
     netTick(INTER_FRAME_SILENCE + 1);
 
     // TODO Fails
+
+    // send slave ack
+    for (int port = 0; port < MAX_PORT; port++) {
+        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
+        if (l2Addr == 0 /* ||
+               portsTested[port]*/) {
+            continue;
+        }
+
+        // send MST
+        std::array<uint8_t, 3> pkt{ { 0x1, L2_PKT_TYPE_ACK, 0xFF } };
+
+        uart_ptrs[port]->S1 |= UART_S1_RDRF_MASK;
+        uart_ptrs[port]->RCFIFO = pkt.size();
+
+        // call to copy header
+        EXPECT_CALL(mock, l1UARTReadNonBlocking(uart_ptrs[port], testing::NotNull(), sizeof(L2Hdr)))
+            .Times(1)
+            .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
+            std::memcpy(data, pkt.data(), len);
+                }))
+            .RetiresOnSaturation();
+
+        EXPECT_CALL(mock, l1UARTReadNonBlocking(uart_ptrs[port], testing::NotNull(), sizeof(L2Pkt::crc)))
+            .Times(1)
+            .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
+            memcpy(data, pkt.data() + sizeof(L2Hdr), len);
+                }))
+            .RetiresOnSaturation();
+
+        l1TransferHandleIRQ(uart_ptrs[port], port);
+
+        uart_ptrs[port]->S1 &= ~UART_S1_RDRF_MASK;
+        uart_ptrs[port]->RCFIFO = 0;
+    }
+
+    netTick(INTER_FRAME_SILENCE + 1);
 }
 
 

@@ -5,6 +5,8 @@
 #include <assert.h>
 
 #define UART_FIFO_SIZE 128
+#define XFER_TX 0
+#define XFER_RX_ECHO 1
 
 UART_Type* UART[MAX_PORT];
 
@@ -128,6 +130,8 @@ void l1Rx(UART_Type* UARTptr, uint8_t port) {
 	}
 }
 
+
+
 void l1Tx(UART_Type* UARTptr, uint8_t port) {
 	uint8_t  txLen = UART_FIFO_SIZE - UARTptr->TCFIFO;
 	bool txCmplt;
@@ -135,7 +139,7 @@ void l1Tx(UART_Type* UARTptr, uint8_t port) {
 		uint8_t* ptr;
 		uint8_t  len;
 
-		txCmplt = l2GetTxPkt(port, &ptr, &len, txIndex[port], txLen); // return remaining len
+		txCmplt = l2GetTxPkt(port, &ptr, &len, txIndex[port], txLen, XFER_TX); // return remaining len
 		uint8_t txLenMin = min(len, txLen);
 		txLen -= txLenMin;
 		txIndex[port] += txLenMin;
@@ -145,7 +149,7 @@ void l1Tx(UART_Type* UARTptr, uint8_t port) {
 	/* Enable transmitter interrupt. */
 	if (txCmplt) {
 		/* TX register empty interrupt */
-		UARTptr->C2 |= (UART_C2_TIE_MASK | UART_C2_TE_MASK); // start Tx
+		UARTptr->C2 &= ~(UART_C2_TIE_MASK | UART_C2_TE_MASK); // start Tx
 	}
 	else {
 		/*enable transmission complete interrupt. */
@@ -159,7 +163,7 @@ void validateTxEcho(UART_Type* UARTptr, uint8_t port, uint8_t count) {
 		uint8_t* ptr;
 		uint8_t  len;
 
-		txCmplt = l2GetTxPkt(port, &ptr, &len, rxIndex[port], count); // return remaining len
+		txCmplt = l2GetTxPkt(port, &ptr, &len, rxIndex[port], count, XFER_RX_ECHO); // return remaining len
 		uint8_t rxLenMin = min(len, count);
 
 		bool valid = l1UARTCmpNonBlocking(UARTptr, ptr, rxLenMin);
@@ -176,7 +180,7 @@ void validateTxEcho(UART_Type* UARTptr, uint8_t port, uint8_t count) {
 			l1TxCmplt(port);
 		}
 
-	} while (count > 0);
+	} while (count > 0 && !txCmplt);
 }
 
 void l1RxCmplt(uint8_t port) {
@@ -197,7 +201,7 @@ void l1TransferHandleIRQ(UART_Type* UARTptr, uint8_t port) {
 			else { // proc rx
 				// validate up to tx index first 
 				if (rxIndex[port] < txIndex[port]) {
-					validateTxEcho(UARTptr, port, txIndex[port]);
+					validateTxEcho(UARTptr, port, (txIndex[port] - rxIndex[port]));
 				}
 				l1Rx(UARTptr, port);
 			}

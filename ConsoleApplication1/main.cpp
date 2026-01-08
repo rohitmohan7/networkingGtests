@@ -1750,7 +1750,7 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
         uart_ptrs[port]->S1 |= UART_S1_RDRF_MASK;
         uart_ptrs[port]->RCFIFO = pkt.size();
 
-        // call to copy header
+        // call read ACK
         EXPECT_CALL(mock, l1UARTReadNonBlocking(uart_ptrs[port], testing::NotNull(), pkt.size()))
             .Times(1)
             .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {

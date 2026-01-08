@@ -13,3 +13,4 @@ uint8_t page_alloc(void);
 void pages_init(void);
 uint8_t ceilPages(uint8_t len);
 uint16_t pageOff(uint8_t p);
+void page_free(uint8_t p);

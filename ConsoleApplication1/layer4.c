@@ -33,20 +33,26 @@ void l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr) {
 
 		prio_stream_t* ps = &s->prio[prio];
 
+		// free till tail
+		while (ps->head_page != l4Pkt->tail_page) {
+			uint8_t currPage = ps->head_page;
+			ps->head_page = g_next[ps->head_page];
+			page_free(currPage);
+		}
+
 		// free from allocator
-
-
 		if (l4Pkt->tail_used == UNIT) { // full tail used 
+			page_free(ps->head_page);
 			ps->head_page = g_next[l4Pkt->tail_page];
 			ps->head_off = 0;
 		}
 		else {
-			ps->head_page = l4Pkt->tail_page;
+			//ps->head_page = l4Pkt->tail_page;
 			ps->head_off = l4Pkt->tail_used + 1;
 		}
 
 		L4Hdr* hdr = &l4Pkt->hdr;
-		if (hdr->len == 0) {
+		if (ps->head_page != INVALID_PAGE && hdr->len == 0) {
 			ps->msgNo++; // increment seq number
 
 			ps->msgLen = g_pool[(ps->head_page * UNIT) + (ps->head_off)];
@@ -61,6 +67,11 @@ void l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr) {
 			if (ps->head_off == UNIT) {
 				ps->head_page = g_next[ps->head_page];
 				ps->head_off = 0;
+			}
+
+			if (ps->msgLen == 0) { //  no more message pending
+				ps->head_page = INVALID_PAGE;
+				ps->tail_page = INVALID_PAGE;
 			}
 		}
 		break;

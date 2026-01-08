@@ -309,11 +309,17 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 				l2TxPktDesc[port].time > (LINE_SILENT / 2)) { // retry with next mst
 				l2SendMst(port, l2TxPktDesc[port].l2TxPkt.msg.mst.nextMst);
 			}
-			l2TmLstRx[port] = 0; // start Rx timer after Tx has been acked
-
-		} else {
+			//l2TmLstRx[port] = 0; // start Rx timer after Tx has been acked
+		}
+		
+		if (l2TxPktDesc[port].l2TxPkt.hdr.type != L2_PKT_TYPE_INVALID &&
+			l2TxPktDesc[port].time == 0xFF) { // if there is pending TX wait for it to complete
+			l2TmLstRx[port] = 0;
+		}
+		else {
 			l2TmLstRx[port] += ms;
-		}// increment tx timer
+		}
+		// increment rx timer
 
 		if (l2TmLstRx[port] > (((uint8_t)port_addr[port]) * LINE_SILENT)) {
 			mst_token[port] = true;
@@ -337,6 +343,7 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 
 			if (l2TxPktDesc[port].l2TxPkt.hdr.type != L2_PKT_TYPE_INVALID &&
 				l2TxPktDesc[port].time == 0xFF) {
+				l2TmLstRx[port] = 0; // zero rx timer
 				l1StartTx(port);
 			}
 		}

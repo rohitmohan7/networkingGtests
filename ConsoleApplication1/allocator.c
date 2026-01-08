@@ -25,7 +25,7 @@ uint8_t page_alloc(void)
     return p;
 }
 
-static void page_free(uint8_t p)
+void page_free(uint8_t p)
 {
     g_next[p] = g_free_head;
     g_free_head = p;

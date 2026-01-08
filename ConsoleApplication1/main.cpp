@@ -1751,17 +1751,10 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
         uart_ptrs[port]->RCFIFO = pkt.size();
 
         // call to copy header
-        EXPECT_CALL(mock, l1UARTReadNonBlocking(uart_ptrs[port], testing::NotNull(), sizeof(L2Hdr)))
+        EXPECT_CALL(mock, l1UARTReadNonBlocking(uart_ptrs[port], testing::NotNull(), pkt.size()))
             .Times(1)
             .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
             std::memcpy(data, pkt.data(), len);
-                }))
-            .RetiresOnSaturation();
-
-        EXPECT_CALL(mock, l1UARTReadNonBlocking(uart_ptrs[port], testing::NotNull(), sizeof(L2Pkt::crc)))
-            .Times(1)
-            .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
-            memcpy(data, pkt.data() + sizeof(L2Hdr), len);
                 }))
             .RetiresOnSaturation();
 

@@ -119,10 +119,10 @@ void l1Rx(UART_Type* UARTptr, uint8_t port) {
 			l1UARTAbortRead(UARTptr);
 			return;
 		}
-
-		l1UARTReadNonBlocking(UARTptr, ptr, len);
-		rxLen -= len;
-		rxIndex[port] += len;
+		uint8_t rxLenMin = min(len, rxLen);
+		l1UARTReadNonBlocking(UARTptr, ptr, rxLenMin);
+		rxLen -= rxLenMin;
+		rxIndex[port] += rxLenMin;
 	} while (rxLen > 0);
 
 	if (rxLen > 0) { // not enough mem to write

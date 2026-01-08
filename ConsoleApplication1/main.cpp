@@ -1616,6 +1616,10 @@ TEST_P(MultiHop, mstPassMsg) {
 }
 #endif
 
+#define L2_FRAME_SIZE (RS485_FRAME_SIZE - (sizeof(L2Hdr) + sizeof(((L2Pkt*)0)->crc)))
+#define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
+#define L4_FRAME_SIZE (L3_FRAME_SIZE - sizeof(L4Hdr))
+
 TEST_P(MultiHop, pduNoHopSingleFrame) {
     MockUart mock;
     g_mock = &mock;
@@ -1627,6 +1631,12 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
         msg[i];
     }
 
+    static const int MSG2_SIZE = L4_FRAME_SIZE+1;
+    std::array<uint8_t, MSG2_SIZE> msg2;
+    for (int i = 0; i < MSG2_SIZE; i++) { // send multiframe msg
+        msg[i];
+    }
+    uint8_t size = UNIT;
     for (int port = 0; port < MAX_PORT; port++) {
         uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
         if (l2Addr == 0 /* ||
@@ -1636,6 +1646,7 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
 
         // send msg
         appSend(msg.data(), MSG_SIZE, 1, 0);
+        appSend(msg2.data(), MSG2_SIZE, 1, 0);
 
         // send MST
         std::array<uint8_t, 3> pkt{ { l2Addr, L2_PKT_TYPE_MST, 0xFF } };
@@ -1709,7 +1720,6 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
         uint8_t pageSize = ceilPages(MSG_SIZE);
 
         for (int page = 0; page < pageSize; page++) {
-            uint8_t size = UNIT;
             if (page == pageSize - 1) {
                 size = MSG_SIZE % UNIT;
             }
@@ -1762,6 +1772,73 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
 
         uart_ptrs[port]->S1 &= ~UART_S1_RDRF_MASK;
         uart_ptrs[port]->RCFIFO = 0;
+
+        // first expect hdr for second msg
+        PduHdr pduHdr = {
+            .l2hdr = {
+                0x1,
+                L2_PKT_TYPE_PDU
+            },
+            .l3hdr = {
+                GetParam().portAddr[port],
+                0x101,
+                1,
+                0
+            },
+            .l4hdr = {
+                1,
+                1
+            }
+        };
+
+        EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart_ptrs[port], testing::NotNull(), sizeof(PduHdr)))
+            .Times(1)
+            .WillOnce(testing::Invoke([pduHdr](UART_Type* UART, const uint8_t* data, size_t len) {
+            EXPECT_EQ(0, std::memcmp(data, (uint8_t*)&pduHdr, len));
+                }))
+            .RetiresOnSaturation();
+
+        // echo
+        EXPECT_CALL(mock, l1UARTCmpNonBlocking(uart_ptrs[port], testing::NotNull(), sizeof(PduHdr)))
+            .Times(1)
+            .WillOnce(testing::Invoke([pduHdr](UART_Type* UART, const uint8_t* data, size_t len) {
+            EXPECT_EQ(0, std::memcmp(data, (uint8_t*)&pduHdr, len));
+            return true;
+                }))
+            .RetiresOnSaturation();
+
+        // expect msg size single frame
+        uint8_t pageSize = ceilPages(L4_FRAME_SIZE);
+        uint8_t offset = size + sizeof(L4Hdr::len);
+        size = UNIT - (size + sizeof(L4Hdr::len)); // 2 bytes used for msg len
+       
+        for (int page = 0; page < pageSize; page++) {
+            //uint8_t size = UNIT;
+            if (page == pageSize - 1) {
+                size = L4_FRAME_SIZE % UNIT;
+            }
+            EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart_ptrs[port], testing::NotNull(), size))
+                .Times(1)
+                .WillOnce(testing::Invoke([msg2, page, offset](UART_Type* UART, const uint8_t* data, size_t len) {
+                printf("page: %d, len: %d\n", page);
+
+                uint8_t idx = page > 0 ? ((page * UNIT) - offset) : 0;
+                EXPECT_EQ(0, std::memcmp(data, (msg2.data() + idx), len));
+                    }))
+                .RetiresOnSaturation();
+
+            // echo
+            EXPECT_CALL(mock, l1UARTCmpNonBlocking(uart_ptrs[port], testing::NotNull(), size))
+                .Times(1)
+                .WillOnce(testing::Invoke([msg2, page, offset](UART_Type* UART, const uint8_t* data, size_t len) {
+                uint8_t idx = page > 0 ? ((page * UNIT) - offset) : 0;
+                EXPECT_EQ(0, std::memcmp(data, (msg2.data() + idx), len));
+                return true;
+                    }))
+                .RetiresOnSaturation();
+
+            size = UNIT;
+        }
     }
 
     netTick(INTER_FRAME_SILENCE + 1);

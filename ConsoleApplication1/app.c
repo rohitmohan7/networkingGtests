@@ -5,7 +5,7 @@
 
 
 
-bool appSend(const uint8_t* data, uint8_t len, uint16_t pos, uint8_t priority)
+bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority)
 {
     if ((data == NULL) || (len == 0U)) { return false; }
     if ((pos >= (uint16_t)MAX_POS) || (priority >= (uint8_t)MAX_PRIORITY)) { return false; }
@@ -20,6 +20,28 @@ bool appSend(const uint8_t* data, uint8_t len, uint16_t pos, uint8_t priority)
     uint8_t tail_free = 0U;
     if (s->tail_page != INVALID_PAGE)
     {
+        for (int size = 0; size < sizeof(len); size++)
+        {
+            if (s->tail_used == UNIT) {
+                uint8_t p = page_alloc();
+                if (p == INVALID_PAGE)
+                {
+                    /* We already checked capacity, so this should not happen,
+                       but if it does, return false deterministically without corrupting chain.
+                       (No rollback needed because nothing allocated in this iteration if fail here.) */
+                    return false;
+                }
+                g_next[s->tail_page] = p;
+                s->tail_page = page_alloc();
+                g_pool[pageOff(s->tail_page)] = (uint8_t)((len >> (size * 8)) & 0xFFu);
+                s->tail_used = 1U;
+            }
+            else {
+                const uint32_t base = pageOff(s->tail_page) + (uint32_t)s->tail_used;
+                g_pool[base] = (uint8_t)((len >> (size * 8)) & 0xFFu);
+                s->tail_used++;
+            }
+        }
         tail_free = UNIT - s->tail_used;  /* 0..UNIT */
     }
 

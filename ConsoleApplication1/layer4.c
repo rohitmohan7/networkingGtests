@@ -48,21 +48,21 @@ void l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr) {
 		}
 		else {
 			//ps->head_page = l4Pkt->tail_page;
-			ps->head_off = l4Pkt->tail_used + 1;
+			ps->head_off = l4Pkt->tail_used;
 		}
 
 		L4Hdr* hdr = &l4Pkt->hdr;
 		if (ps->head_page != INVALID_PAGE && hdr->len == 0) {
 			ps->msgNo++; // increment seq number
-
-			ps->msgLen = g_pool[(ps->head_page * UNIT) + (ps->head_off)];
+			uint8_t base = pageOff(ps->head_page) + (ps->head_off);
+			ps->msgLen = g_pool[base];
 			ps->head_off++;
 			if (ps->head_off == UNIT) {
 				ps->head_page = g_next[ps->head_page];
 				ps->head_off = 0;
 			}
-
-			ps->msgLen |= (g_pool[(ps->head_page * UNIT) + (ps->head_off)]) << 8;
+			base = pageOff(ps->head_page) + (ps->head_off);
+			ps->msgLen |= (g_pool[base]) << 8;
 			ps->head_off++;
 			if (ps->head_off == UNIT) {
 				ps->head_page = g_next[ps->head_page];

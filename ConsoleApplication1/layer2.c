@@ -83,7 +83,7 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint8_t idx, uint8_
 			const uint16_t base = pageOff(tx_pdu_head[xfer][port]) + (uint16_t)tx_pdu_hd_off[xfer][port];
 			// start with first page
 			*ptr = &g_pool[base];
-			*len = (UNIT - l4pkt->head_off);
+			*len = (UNIT - tx_pdu_hd_off[xfer][port]);
 
 			if (tx_pdu_head[xfer][port] == l4pkt->tail_page) {
 				*len -= (UNIT - l4pkt->tail_used);

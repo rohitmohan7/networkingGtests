@@ -1640,7 +1640,7 @@ void expectCrc(MockUart& mock, UART_Type* UART, l2Crc crc) {
         .RetiresOnSaturation();
 }
 
-void expectHdr(MockUart& mock, UART_Type* UART, PduHdr & pduHdr) {
+void expectHdr(MockUart& mock, UART_Type* UART, const PduHdr & pduHdr) {
     EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), sizeof(PduHdr)))
         .Times(1)
         .WillOnce(testing::Invoke([pduHdr](UART_Type* UART, const uint8_t* data, size_t len) {
@@ -1720,7 +1720,8 @@ void expectTxMultiFrame(MockUart& mock,
                   uint8_t & size, 
                   const TxMultiFrameType& type,
                   const uint8_t * msg,
-                  const int& msgSize) {
+                  const int& msgSize,
+                  const PduHdr& hdr = PduHdr()) {
 
     if (type == TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG) {
         size = 0;
@@ -1728,6 +1729,11 @@ void expectTxMultiFrame(MockUart& mock,
 
     if (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG) {
         idx = 0; // zero the idx
+    }
+
+    if (type != TxMultiFrameType::TX_MULTI_FRAME_CONT) {
+        // expect header
+        expectHdr(mock, UART, hdr);
     }
 
     size = UNIT - (size + (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG? sizeof(L4Hdr::len): 0));
@@ -1825,7 +1831,7 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
             .l4hdr = { 0, 0 }
         };
 
-        expectHdr(mock, uart_ptrs[port], pduHdr);
+        //expectHdr(mock, uart_ptrs[port], pduHdr);
 
         expectTxMultiFrame(mock,
             uart_ptrs[port],
@@ -1834,14 +1840,13 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
             size,
             TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
             msg.data(),
-            msg.size());
+            msg.size(),
+            pduHdr);
 
         // expect CRC call
     }
     netTick(INTER_FRAME_SILENCE + 1);
-
     // TODO Fails
-
     // send slave ack
 
     for (int port = 0; port < MAX_PORT; port++) {
@@ -1861,7 +1866,7 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
 
         // first expect hdr for second msg
         pduHdr.l4hdr = L4Hdr{ 1, 1 };
-        expectHdr(mock, uart_ptrs[port], pduHdr);
+        //expectHdr(mock, uart_ptrs[port], pduHdr);
 
         // expect msg size single frame
         expectTxMultiFrame(mock, 
@@ -1871,7 +1876,8 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
                            size, 
                            TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG,
                            msg2.data(),
-                           msg2.size());
+                           msg2.size(),
+                           pduHdr);
     }
 
     netTick(INTER_FRAME_SILENCE + 1);
@@ -1906,7 +1912,7 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
 
         // first expect hdr for second msg
         pduHdr.l4hdr = L4Hdr{ 1, 0 };
-        expectHdr(mock, uart_ptrs[port], pduHdr);
+        //expectHdr(mock, uart_ptrs[port], pduHdr);
 
         // final message
         expectTxMultiFrame(mock,
@@ -1916,7 +1922,8 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
             size,
             TxMultiFrameType::TX_MULTI_FRAME_NEW_FRAME,
             msg2.data(),
-            msg2.size());
+            msg2.size(),
+            pduHdr);
     }
 
     // send ACK

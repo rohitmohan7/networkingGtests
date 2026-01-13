@@ -1,6 +1,8 @@
 ﻿#include "global.h"
 #include "common.h"
 
+#define UART_FIFO_SIZE 128
+
 void l1Init(UART_Type* UARTPtr[MAX_PORT]);
 
 void l1TransferHandleIRQ(UART_Type* UART, uint8_t port);

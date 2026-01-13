@@ -54,7 +54,7 @@ void l2AbortTx(uint8_t port) {
 }*/
 #define XFER_DIR 2 // TX RX
 
-bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint8_t idx, uint8_t txRxFifoLen, uint8_t xfer) {
+bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8_t txRxFifoLen, uint8_t xfer) {
 
 	static uint8_t tx_pdu_head[XFER_DIR][MAX_PORT];
 	static uint8_t tx_pdu_hd_off[XFER_DIR][MAX_PORT];
@@ -122,7 +122,7 @@ void l2SendNak(uint8_t port, uint8_t rsn) {
 }
 
 
-uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint8_t idx) {
+uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 	uint8_t len = 0;
 	/* */
 	if ((l2TmLstRx[port] > INTER_CHAR_SILENCE) && 
@@ -340,12 +340,13 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 					}
 				}
 			}
-
+#if 0
 			if (l2TxPktDesc[port].l2TxPkt.hdr.type != L2_PKT_TYPE_INVALID &&
 				l2TxPktDesc[port].time == 0xFF) {
 				l2TmLstRx[port] = 0; // zero rx timer
 				l1StartTx(port);
 			}
+#endif
 		}
 	}
 }

@@ -4,14 +4,14 @@
 #include "network.h"
 #include <assert.h>
 
-#define UART_FIFO_SIZE 128
+
 #define XFER_TX 0
 #define XFER_RX_ECHO 1
 
 UART_Type* UART[MAX_PORT];
 
-static uint8_t txIndex[MAX_PORT];
-static uint8_t rxIndex[MAX_PORT];
+static uint16_t txIndex[MAX_PORT];
+static uint16_t rxIndex[MAX_PORT];
 
 void l1UARTTransferStopTx(UART_Type* UARTptr) {
 	UARTptr->C2 &= ~((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK);
@@ -144,16 +144,20 @@ void l1Tx(UART_Type* UARTptr, uint8_t port) {
 		txLen -= txLenMin;
 		txIndex[port] += txLenMin;
 		l1UARTWriteNonBlocking(UARTptr, ptr, txLenMin);
-		
+
+		if (txCmplt) { // we need CRC
+			
+		}
+
 	} while (txLen > 0 && !txCmplt);
 	/* Enable transmitter interrupt. */
 	if (txCmplt) {
-		/* TX register empty interrupt */
-		UARTptr->C2 &= ~(UART_C2_TIE_MASK | UART_C2_TE_MASK); // start Tx
-	}
-	else {
 		/*enable transmission complete interrupt. */
 		UARTptr->C2 |= (UART_C2_TCIE_MASK | UART_C2_TE_MASK);
+	}
+	else {
+		/* TX register empty interrupt */
+		UARTptr->C2 |= (UART_C2_TIE_MASK | UART_C2_TE_MASK); // start Tx
 	}
 }
 
@@ -168,8 +172,8 @@ void validateTxEcho(UART_Type* UARTptr, uint8_t port, uint8_t count) {
 
 		bool valid = l1UARTCmpNonBlocking(UARTptr, ptr, rxLenMin);
 
-		count -= len;
-		rxIndex[port] += len;
+		count = (count > len)? (count - len): 0;
+		rxIndex[port] += rxLenMin;
 
 		if (!valid) {
 			l1AbortTx(UARTptr, port);
@@ -194,7 +198,7 @@ void l1TransferHandleIRQ(UART_Type* UARTptr, uint8_t port) {
 	if (((UART_S1_RDRF_MASK & status) != 0U) && ((UART_C2_RIE_MASK & cntrl) != 0U)) {
 		uint8_t count = UARTptr->RCFIFO;
 		// validate echo
-		if ((rxIndex[port] + count) > txIndex[port]) { // tx packet
+		if ((rxIndex[port] + (uint16_t)count) > txIndex[port]) { // tx packet
 			if (cntrl & UART_C2_TE_MASK) { // recieved more packets than echo while tx still active abort
 				l1AbortTx(UARTptr, port);
 			}

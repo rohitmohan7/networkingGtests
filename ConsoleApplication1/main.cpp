@@ -1442,7 +1442,9 @@ extern "C" void l1UARTWriteNonBlocking(UART_Type* UART, const uint8_t* data, siz
         }
         UART->S1 |= UART_S1_RDRF_MASK;
         UART->RCFIFO = length;
+        UART->S1 &= ~UART_S1_TDRE_MASK; // now data register will no longer be empty
         l1TransferHandleIRQ(UART, port);
+        UART->S1 &= ~UART_S1_RDRF_MASK;
         break;
     }
 }
@@ -1628,13 +1630,13 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
     static const int MSG_SIZE = 100;
     std::array<uint8_t, MSG_SIZE> msg;
     for (int i = 0; i < MSG_SIZE; i++) {
-        msg[i];
+        msg[i] = i;
     }
 
     static const int MSG2_SIZE = L4_FRAME_SIZE+1;
     std::array<uint8_t, MSG2_SIZE> msg2;
     for (int i = 0; i < MSG2_SIZE; i++) { // send multiframe msg
-        msg[i];
+        msg2[i] = i;
     }
     uint8_t size = UNIT;
     for (int port = 0; port < MAX_PORT; port++) {
@@ -1747,6 +1749,7 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
     // TODO Fails
 
     // send slave ack
+    uint8_t idx[MAX_PORT];
     for (int port = 0; port < MAX_PORT; port++) {
         uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
         if (l2Addr == 0 /* ||
@@ -1754,7 +1757,14 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
             continue;
         }
 
-        // send MST
+        idx[port] = 0;
+
+        // send TX complete
+        uart_ptrs[port]->S1 |= UART_S1_TC_MASK;
+        l1TransferHandleIRQ(uart_ptrs[port], port);
+        uart_ptrs[port]->S1 &= ~UART_S1_TC_MASK;
+
+        // send ACK
         std::array<uint8_t, 3> pkt{ { 0x1, L2_PKT_TYPE_ACK, 0xFF } };
 
         uart_ptrs[port]->S1 |= UART_S1_RDRF_MASK;
@@ -1808,19 +1818,55 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
             .RetiresOnSaturation();
 
         // expect msg size single frame
-        uint8_t pageSize = ceilPages(L4_FRAME_SIZE);
-        uint8_t offset = size + sizeof(L4Hdr::len);
+        size = UNIT - (size + sizeof(L4Hdr::len));
+       
+        uint8_t len = UART_FIFO_SIZE - size - sizeof(PduHdr);
+
+        testing::InSequence seq;
+
+        for (;;) {
+            uint8_t idx_loc = idx[port];
+            EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart_ptrs[port], testing::NotNull(), size))
+                .Times(1)
+                .WillOnce(testing::Invoke([msg2, idx_loc](UART_Type* UART, const uint8_t* data, size_t len) {
+                printf("page: %d, len: %d\n", idx_loc, len);
+                EXPECT_EQ(0, std::memcmp(data, (msg2.data() + idx_loc), len));
+                    }))
+                .RetiresOnSaturation();
+
+            // echo
+            EXPECT_CALL(mock, l1UARTCmpNonBlocking(uart_ptrs[port], testing::NotNull(), size))
+                .Times(1)
+                .WillOnce(testing::Invoke([msg2, idx_loc](UART_Type* UART, const uint8_t* data, size_t len) {
+                EXPECT_EQ(0, std::memcmp(data, (msg2.data() + idx_loc), len));
+                return true;
+                    }))
+                .RetiresOnSaturation();
+
+            idx[port] += size;
+
+            if (len == 0) {
+                break;
+            }
+
+            size = std::min((uint8_t)UNIT, len);
+            len -= size;
+        }
+
+#if 0
         size = UNIT - (size + sizeof(L4Hdr::len)); // 2 bytes used for msg len
+
+        testing::InSequence seq;
        
         for (int page = 0; page < pageSize; page++) {
             //uint8_t size = UNIT;
             if (page == pageSize - 1) {
-                size = L4_FRAME_SIZE % UNIT;
+                size = UART_FIFO_SIZE % UNIT;
             }
             EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart_ptrs[port], testing::NotNull(), size))
                 .Times(1)
                 .WillOnce(testing::Invoke([msg2, page, offset](UART_Type* UART, const uint8_t* data, size_t len) {
-                printf("page: %d, len: %d\n", page);
+                printf("page: %d, len: %d\n", page, len);
 
                 uint8_t idx = page > 0 ? ((page * UNIT) - offset) : 0;
                 EXPECT_EQ(0, std::memcmp(data, (msg2.data() + idx), len));
@@ -1839,8 +1885,168 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
 
             size = UNIT;
         }
+#endif
     }
 
+
+    netTick(INTER_FRAME_SILENCE + 1);
+
+    // send ISR for next set of Data 
+    for (int port = 0; port < MAX_PORT; port++) {
+        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
+        if (l2Addr == 0 /* ||
+               portsTested[port]*/) {
+            continue;
+        }
+        testing::InSequence seq;
+        size = UNIT - (size);
+        uint8_t len = UART_FIFO_SIZE - size;
+
+        for (;;) {
+            uint8_t idx_loc = idx[port];
+            EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart_ptrs[port], testing::NotNull(), size))
+                .Times(1)
+                .WillOnce(testing::Invoke([msg2, idx_loc](UART_Type* UART, const uint8_t* data, size_t len) {
+                printf("page: %d, len: %d\n", idx_loc, len);
+                EXPECT_EQ(0, std::memcmp(data, (msg2.data() + idx_loc), len));
+                    }))
+                .RetiresOnSaturation();
+
+            // echo
+            EXPECT_CALL(mock, l1UARTCmpNonBlocking(uart_ptrs[port], testing::NotNull(), size))
+                .Times(1)
+                .WillOnce(testing::Invoke([msg2, idx_loc](UART_Type* UART, const uint8_t* data, size_t len) {
+                EXPECT_EQ(0, std::memcmp(data, (msg2.data() + idx_loc), len));
+                return true;
+                    }))
+                .RetiresOnSaturation();
+
+            idx[port] += size;
+            if (len == 0) {
+                break;
+            }
+
+            size = std::min((uint8_t)UNIT, len);
+
+            if (idx[port] + size > L4_FRAME_SIZE) {
+                size = L4_FRAME_SIZE - idx[port];
+                len = 0;
+            }
+            else {
+                len -= size;
+            }
+        }
+
+        uart_ptrs[port]->S1 |= UART_S1_TDRE_MASK;
+        l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
+
+        // send TX complete
+        uart_ptrs[port]->S1 |= UART_S1_TC_MASK;
+        l1TransferHandleIRQ(uart_ptrs[port], port);
+        uart_ptrs[port]->S1 &= ~UART_S1_TC_MASK;
+
+        // send ACK
+        std::array<uint8_t, 3> pkt{ { 0x1, L2_PKT_TYPE_ACK, 0xFF } };
+
+        uart_ptrs[port]->S1 |= UART_S1_RDRF_MASK;
+        uart_ptrs[port]->RCFIFO = pkt.size();
+
+        // call read ACK
+        EXPECT_CALL(mock, l1UARTReadNonBlocking(uart_ptrs[port], testing::NotNull(), pkt.size()))
+            .Times(1)
+            .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
+            std::memcpy(data, pkt.data(), len);
+                }))
+            .RetiresOnSaturation();
+
+        l1TransferHandleIRQ(uart_ptrs[port], port);
+
+        uart_ptrs[port]->S1 &= ~UART_S1_RDRF_MASK;
+        uart_ptrs[port]->RCFIFO = 0;
+
+        // first expect hdr for second msg
+        PduHdr pduHdr = {
+            .l2hdr = {
+                0x1,
+                L2_PKT_TYPE_PDU
+            },
+            .l3hdr = {
+                GetParam().portAddr[port],
+                0x101,
+                1,
+                0
+            },
+            .l4hdr = {
+                1,
+                0
+            }
+        };
+
+        EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart_ptrs[port], testing::NotNull(), sizeof(PduHdr)))
+            .Times(1)
+            .WillOnce(testing::Invoke([pduHdr](UART_Type* UART, const uint8_t* data, size_t len) {
+            EXPECT_EQ(0, std::memcmp(data, (uint8_t*)&pduHdr, len));
+                }))
+            .RetiresOnSaturation();
+
+        // echo
+        EXPECT_CALL(mock, l1UARTCmpNonBlocking(uart_ptrs[port], testing::NotNull(), sizeof(PduHdr)))
+            .Times(1)
+            .WillOnce(testing::Invoke([pduHdr](UART_Type* UART, const uint8_t* data, size_t len) {
+            EXPECT_EQ(0, std::memcmp(data, (uint8_t*)&pduHdr, len));
+            return true;
+                }))
+            .RetiresOnSaturation();
+
+        // final message
+        size = UNIT - (size);
+
+        len = UART_FIFO_SIZE - size - sizeof(PduHdr);
+
+        for (;;) {
+            uint8_t idx_loc = idx[port];
+
+            if (idx_loc + size > MSG2_SIZE) {
+                size = MSG2_SIZE - idx_loc;
+                len = 0;
+            }
+
+            EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart_ptrs[port], testing::NotNull(), size))
+                .Times(1)
+                .WillOnce(testing::Invoke([msg2, idx_loc](UART_Type* UART, const uint8_t* data, size_t len) {
+                printf("page: %d, len: %d\n", idx_loc, len);
+                EXPECT_EQ(0, std::memcmp(data, (msg2.data() + idx_loc), len));
+                    }))
+                .RetiresOnSaturation();
+
+            // echo
+            EXPECT_CALL(mock, l1UARTCmpNonBlocking(uart_ptrs[port], testing::NotNull(), size))
+                .Times(1)
+                .WillOnce(testing::Invoke([msg2, idx_loc](UART_Type* UART, const uint8_t* data, size_t len) {
+                EXPECT_EQ(0, std::memcmp(data, (msg2.data() + idx_loc), len));
+                return true;
+                    }))
+                .RetiresOnSaturation();
+
+            if (len == 0) {
+                break;
+            }
+
+            idx[port] += size;
+            size = std::min((uint8_t)UNIT, len);
+
+            if (idx[port] + size > L4_FRAME_SIZE) {
+                size = L4_FRAME_SIZE - idx[port];
+                len = 0;
+            }
+            else {
+                len -= size;
+            }
+        }
+    }
+
+
+    // send ACK
     netTick(INTER_FRAME_SILENCE + 1);
 }
 

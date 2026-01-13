@@ -79,6 +79,11 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 		}
 		else {
 			// msg offset
+			if (tx_pdu_head[xfer][port] == INVALID_PAGE) {
+				*ptr = &l2TxPktDesc[port].l2TxPkt.crc;
+				*len = sizeof(l2TxPktDesc[port].l2TxPkt.crc);
+				return true;
+			}
 
 			const uint16_t base = pageOff(tx_pdu_head[xfer][port]) + (uint16_t)tx_pdu_hd_off[xfer][port];
 			// start with first page
@@ -86,19 +91,24 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 			*len = (UNIT - tx_pdu_hd_off[xfer][port]);
 
 			if (tx_pdu_head[xfer][port] == l4pkt->tail_page) {
-				*len -= (UNIT - l4pkt->tail_used);
 
-				if (txRxFifoLen >= *len) { // all data will be sent in this single Tx
+				if (tx_pdu_hd_off[xfer][port] < l4pkt->tail_used) {
+					*len -= (UNIT - l4pkt->tail_used);
+
+					//if (txRxFifoLen >= *len) { // all data will be sent in this single Tx
+					//	return true;
+					//}
+					tx_pdu_hd_off[xfer][port] += txRxFifoLen;
+				}
+				else { //  this is CRC
+					*ptr = &l2TxPktDesc[port].l2TxPkt.crc;
+					*len = sizeof(l2TxPktDesc[port].l2TxPkt.crc);
 					return true;
 				}
-				tx_pdu_hd_off[xfer][port] += txRxFifoLen;
 				return false;
 
 			} else if (*len <= txRxFifoLen) { // we are at the end of current page
 				tx_pdu_head[xfer][port] = g_next[tx_pdu_head[xfer][port]];
-				if (tx_pdu_head[xfer][port] == INVALID_PAGE) {
-					return true;
-				}
 				tx_pdu_hd_off[xfer][port] = 0;
 				return false;
 			}
@@ -117,7 +127,7 @@ void l2SendNak(uint8_t port, uint8_t rsn) {
 	l2TxPktDesc[port].l2TxPkt.msg.nak.reason = rsn; // so we can select next MST
 	l2TxPktDesc[port].time = 0xFF;
 
-	//l2TxPktDesc->l2TxPkt.crc =
+	l2TxPktDesc[port].l2TxPkt.crc = 0xFF;
 	//l1StartTx(port);
 }
 
@@ -211,8 +221,7 @@ void l2SendMst(uint8_t port, uint8_t addr) {
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_MST;
 	l2TxPktDesc[port].l2TxPkt.msg.mst.nextMst = getNxtMst(port, addr); // so we can select next MST
 	l2TxPktDesc[port].time = 0xFF;
-
-	//l2TxPktDesc->l2TxPkt.crc =
+	l2TxPktDesc[port].l2TxPkt.crc = 0xFF; //TODO
 	l1StartTx(port);
 }
 
@@ -221,8 +230,7 @@ void l2SendPdu(uint8_t port, bool mstPass, uint8_t addr) {
 	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_PDU | (mstPass? L2_PKT_TYPE_MST: 0);
 	l2TxPktDesc[port].time = 0xFF;
-
-	//l2TxPktDesc->l2TxPkt.crc =
+	l2TxPktDesc[port].l2TxPkt.crc = 0xFF; // TODO
 	l1StartTx(port);
 }
 void l2TxRetry(uint8_t port) {

@@ -44,6 +44,8 @@ typedef struct {
 	L4Hdr l4hdr;
 } PduHdr;
 
+typedef uint8_t l2Crc;
+
 typedef struct __attribute__((packed)) L2Pkt {
 	L2Hdr hdr;
 
@@ -52,22 +54,22 @@ typedef struct __attribute__((packed)) L2Pkt {
 		L3Pkt pdu;
 
 		struct {
-			uint8_t mstCrc;
+			l2Crc mstCrc;
 			uint8_t nextMst;
 		} mst;
 
 		struct {
-			uint8_t ackCrc;
+			l2Crc ackCrc;
 		} ack;
 
 		struct {
 			uint8_t reason;
-			uint8_t nakCrc;
+			l2Crc nakCrc;
 		} nak;
 
 	} msg;
 
-	uint8_t crc;
+	l2Crc crc;
 
 } L2Pkt; // size 7 bytes
 //_Static_assert(sizeof(L2Pkt) == 7, "L2Pkt wrong size");

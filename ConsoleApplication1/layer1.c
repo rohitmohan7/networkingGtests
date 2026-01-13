@@ -145,10 +145,6 @@ void l1Tx(UART_Type* UARTptr, uint8_t port) {
 		txIndex[port] += txLenMin;
 		l1UARTWriteNonBlocking(UARTptr, ptr, txLenMin);
 
-		if (txCmplt) { // we need CRC
-			
-		}
-
 	} while (txLen > 0 && !txCmplt);
 	/* Enable transmitter interrupt. */
 	if (txCmplt) {

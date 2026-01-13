@@ -1732,12 +1732,14 @@ void expectTxMultiFrame(MockUart& mock,
 
     size = UNIT - (size + (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG? sizeof(L4Hdr::len): 0));
     uint8_t len = UART_FIFO_SIZE - size - (type != TxMultiFrameType::TX_MULTI_FRAME_CONT ? sizeof(PduHdr): 0);
+    bool expectCrcCall = false;
 
     for (;;) {
         uint8_t idx_loc = idx;
         if (idx_loc + size > msgSize) {
             size = msgSize - idx_loc;
             len = 0;
+            expectCrcCall = true;
         }
 
         EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), size))
@@ -1767,10 +1769,15 @@ void expectTxMultiFrame(MockUart& mock,
         if (idx + size > L4_FRAME_SIZE) {
             size = L4_FRAME_SIZE - idx;
             len = 0;
+            expectCrcCall = true;
         }
         else {
             len -= size;
         }
+    }
+
+    if (expectCrcCall) {
+        expectCrc(mock, UART, 0xFF);
     }
 }
 
@@ -1830,7 +1837,6 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
             msg.size());
 
         // expect CRC call
-        expectCrc(mock, uart_ptrs[port], 0xFF); // TBD check actual CRC value
     }
     netTick(INTER_FRAME_SILENCE + 1);
 
@@ -1844,8 +1850,6 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
                portsTested[port]*/) {
             continue;
         }
-
-        idx[port] = 0;
 
         // send TX complete
         uart_ptrs[port]->S1 |= UART_S1_TC_MASK;
@@ -1889,8 +1893,6 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
             msg2.data(),
             msg2.size());
 
-        expectCrc(mock, uart_ptrs[port], 0xFF);
-
         uart_ptrs[port]->S1 |= UART_S1_TDRE_MASK;
         l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
 
@@ -1915,10 +1917,7 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
             TxMultiFrameType::TX_MULTI_FRAME_NEW_FRAME,
             msg2.data(),
             msg2.size());
-
-        expectCrc(mock, uart_ptrs[port], 0xFF);
     }
-
 
     // send ACK
     netTick(INTER_FRAME_SILENCE + 1);

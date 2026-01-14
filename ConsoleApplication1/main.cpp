@@ -1731,6 +1731,18 @@ void expectTxMultiFrame(MockUart& mock,
         idx = 0; // zero the idx
     }
 
+    // check to send ACK
+    if (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG ||
+        type == TxMultiFrameType::TX_MULTI_FRAME_NEW_FRAME) {
+        // send TX complete
+        UART->S1 |= UART_S1_TC_MASK;
+        l1TransferHandleIRQ(UART, port);
+        UART->S1 &= ~UART_S1_TC_MASK;
+
+        // send ACK
+        sendAck(mock, UART, port);
+    }
+
     if (type != TxMultiFrameType::TX_MULTI_FRAME_CONT) {
         // expect header
         expectHdr(mock, UART, hdr);
@@ -1856,14 +1868,6 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
             continue;
         }
 
-        // send TX complete
-        uart_ptrs[port]->S1 |= UART_S1_TC_MASK;
-        l1TransferHandleIRQ(uart_ptrs[port], port);
-        uart_ptrs[port]->S1 &= ~UART_S1_TC_MASK;
-
-        // send ACK
-        sendAck(mock, uart_ptrs[port], port);
-
         // first expect hdr for second msg
         pduHdr.l4hdr = L4Hdr{ 1, 1 };
         //expectHdr(mock, uart_ptrs[port], pduHdr);
@@ -1902,14 +1906,6 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
         uart_ptrs[port]->S1 |= UART_S1_TDRE_MASK;
         l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
 
-        // send TX complete
-        uart_ptrs[port]->S1 |= UART_S1_TC_MASK;
-        l1TransferHandleIRQ(uart_ptrs[port], port);
-        uart_ptrs[port]->S1 &= ~UART_S1_TC_MASK;
-
-        // send ACK
-        sendAck(mock, uart_ptrs[port], port);
-
         // first expect hdr for second msg
         pduHdr.l4hdr = L4Hdr{ 1, 0 };
         //expectHdr(mock, uart_ptrs[port], pduHdr);
@@ -1928,6 +1924,23 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
 
     // send ACK
     netTick(INTER_FRAME_SILENCE + 1);
+#if 0
+    for (int port = 0; port < MAX_PORT; port++) {
+        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
+        if (l2Addr == 0 /* ||
+               portsTested[port]*/) {
+            continue;
+        }
+        // Todo refactor
+        uart_ptrs[port]->S1 |= UART_S1_TC_MASK;
+        l1TransferHandleIRQ(uart_ptrs[port], port);
+        uart_ptrs[port]->S1 &= ~UART_S1_TC_MASK;
+        // send ACK
+        sendAck(mock, uart_ptrs[port], port);
+    }
+
+    netTick(INTER_FRAME_SILENCE + 1);
+#endif
 }
 
 

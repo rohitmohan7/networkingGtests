@@ -31,12 +31,7 @@ typedef struct
 {
     uint16_t dst;
     uint16_t gateway;
-    /* TCP-ish */
-   // uint8_t snd_wnd; // frame windows to send
 
-    /* data in pool (not yet ACKed) */
-   // uint16_t queued_bytes;   /* <= POOL_BYTES */
-         /* 0..UNIT   */
     prio_stream_t prio[MAX_PRIORITY];
 } stream_t;
 
@@ -44,7 +39,7 @@ extern stream_t streams[MAX_POS];
 
 bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr, uint8_t* gatewayL2Addr);
 
-void l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr);
+bool l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr);
 
 void l4Init();
 #endif

@@ -8,9 +8,6 @@
 
 #define MAX_SUBNET 255
 
-extern uint16_t pos_addr_table[MAX_POS];
-extern uint16_t route_table[MAX_SUBNET];
-
 typedef struct __attribute__((packed)) {
 	uint16_t src;
 	uint16_t dst;
@@ -29,5 +26,5 @@ void l3Init();
 // xferMst pass MST
 bool getl3Pkt(L3Pkt* l3pkt, bool* xferMst, uint8_t* addr, uint8_t port);
 
-void l3Ack(L3Pkt* l3Pkt);
+bool l3Ack(L3Pkt* l3Pkt);
 #endif

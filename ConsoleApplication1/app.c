@@ -106,5 +106,14 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority)
         in = (uint16_t)(in + take);
     }
 
+    
+    for (int i = 0; i < sizeof(((L4Hdr*)0)->len); i++) { // zero out msg len
+        if (s->tail_used == UNIT) { 
+            break;
+        }
+        const uint32_t base = pageOff(s->tail_page) + (uint32_t)s->tail_used;
+        g_pool[base + (uint32_t)i] = 0;
+    }
+
     return true;
 }

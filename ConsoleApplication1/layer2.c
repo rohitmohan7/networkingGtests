@@ -290,10 +290,16 @@ void l2CmtRx(port) {
 		
 #ifndef TRANSPORT_ACK
 		// FOR NOW LET L3 ACK
-		l3Ack(&l2TxPktDesc[port].l2TxPkt.msg.pdu);
+		if (l3Ack(&l2TxPktDesc[port].l2TxPkt.msg.pdu)) {
+			l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
+		}
+		else {
+			// false means mmessage frames are still pending send immediatly
+			l2SendPdu(port, false, l2TxPktDesc[port].l2TxPkt.hdr.addr);
+		}
 #endif
 
-		l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
+		
 		break;
 	case L2_PKT_TYPE_NAK: // not applicable for slave
 		l2TxRetry(port);

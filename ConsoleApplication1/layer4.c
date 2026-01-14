@@ -24,7 +24,52 @@ void l4Init() {
 	}
 }
 
-void l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr) {
+void queueMsg(L4Pkt* l4Pkt, prio_stream_t* ps) {
+	// set hdr
+	L4Hdr* hdr = &l4Pkt->hdr;
+	hdr->msgNo = ps->msgNo;
+	hdr->len = (ps->msgLen > L4_FRAME_SIZE) ? (ps->msgLen - L4_FRAME_SIZE) : 0; // remaining msg len
+
+	// feed packet
+	l4Pkt->head_page = ps->head_page;
+	l4Pkt->head_off = ps->head_off;
+
+	// debug
+	uint16_t base = pageOff(l4Pkt->head_page) + (uint16_t)l4Pkt->head_off;
+
+	// debug
+
+	uint8_t currHd = l4Pkt->head_page;
+	uint8_t len = min(L4_FRAME_SIZE, ps->msgLen); // write until min msg len
+
+	while (len > 0) {
+		if (/*currHd == ps->tail_page ||*/
+			len < (UNIT)) { // reached end
+			l4Pkt->tail_page = currHd;
+
+			if (currHd == ps->head_page) {
+				l4Pkt->tail_used = ps->head_off + len;
+			}
+			else {
+				l4Pkt->tail_used = /*currHd == ps->tail_page ? min(len, ps->tail_used) :*/ len;
+			}
+			base = pageOff(l4Pkt->tail_page) + (uint16_t)l4Pkt->tail_used;
+			break;
+		}
+
+		if (currHd == l4Pkt->head_page) {
+			len -= (UNIT - l4Pkt->head_off);
+		}
+		else {
+			len -= UNIT;
+		}
+
+		currHd = g_next[currHd];
+
+	}
+}
+
+bool l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr) {
 	for (int pos = 0; pos < MAX_POS; pos++) {
 		stream_t* s = &streams[pos];
 		if (s->dst != dstAddr) {
@@ -56,7 +101,7 @@ void l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr) {
 
 			if (hdr->len == 0) {
 				ps->msgNo++; // increment seq number
-				uint8_t base = pageOff(ps->head_page) + (ps->head_off);
+				uint16_t base = pageOff(ps->head_page) + (ps->head_off);
 				ps->msgLen = g_pool[base];
 				ps->head_off++;
 				if (ps->head_off == UNIT) {
@@ -75,12 +120,16 @@ void l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr) {
 					ps->head_page = INVALID_PAGE;
 					ps->tail_page = INVALID_PAGE;
 				}
+				return true;
 			}
 			else {
 				ps->msgLen = hdr->len;
 			}
 		}
-		break;
+		
+		queueMsg(l4Pkt, ps);
+		return false;
+		//break;
 	}
 }
 
@@ -101,6 +150,8 @@ bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr,
 		*dstAddr = s->dst;
 		*gatewayL2Addr = s->gateway;
 
+		queueMsg(l4Pkt, ps);
+#if 0
 		// set hdr
 		L4Hdr* hdr = &l4Pkt->hdr;
 		hdr->msgNo = ps->msgNo;
@@ -143,7 +194,7 @@ bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr,
 			currHd = g_next[currHd];
 			
 		}
-
+#endif
 		return true;
 	}
 	return false;

@@ -42,6 +42,32 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority)
                 s->tail_used++;
             }
         }
+//#if 0
+        // set Tx Order
+        for (int size = 0; size < sizeof(txOrder); size++)
+        {
+            if (s->tail_used == UNIT) {
+                uint8_t p = page_alloc();
+                if (p == INVALID_PAGE)
+                {
+                    /* We already checked capacity, so this should not happen,
+                       but if it does, return false deterministically without corrupting chain.
+                       (No rollback needed because nothing allocated in this iteration if fail here.) */
+                    return false;
+                }
+                g_next[s->tail_page] = p;
+                s->tail_page = page_alloc();
+                g_pool[pageOff(s->tail_page)] = (uint8_t)((txOrder >> (size * 8)) & 0xFFu);
+                s->tail_used = 1U;
+            }
+            else {
+                const uint32_t base = pageOff(s->tail_page) + (uint32_t)s->tail_used;
+                g_pool[base] = (uint8_t)((txOrder >> (size * 8)) & 0xFFu);
+                s->tail_used++;
+            }
+        }
+//#endif
+
         tail_free = UNIT - s->tail_used;  /* 0..UNIT */
     }
 
@@ -68,6 +94,9 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority)
 
         // stream is empty init with msg len
         s->msgLen = len;
+
+        // set tx Order
+        s->txOrder = txOrder;
     }
 
     while (in < (uint16_t)len)
@@ -115,5 +144,6 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority)
         g_pool[base + (uint32_t)i] = 0;
     }
 
+    txOrder++;
     return true;
 }

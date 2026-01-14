@@ -10,11 +10,14 @@
 
 stream_t streams[MAX_POS];
 
+TxOrderType txOrder = 0;
+
 void l4Init() {
 	for (int prio = 0; prio < MAX_PRIORITY; prio++) {
 		for (int pos = 0; pos < MAX_POS; pos++) {
 			stream_t* s = &streams[pos];
 			prio_stream_t* ps = &s->prio[prio];
+			ps->txOrder = 0;
 			ps->msgNo = 0;
 			ps->head_page = INVALID_PAGE;
 			ps->tail_page = INVALID_PAGE;
@@ -69,6 +72,7 @@ void queueMsg(L4Pkt* l4Pkt, prio_stream_t* ps) {
 	}
 }
 
+// directly enqueue next prio msg in ACK
 bool l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr) {
 	for (int pos = 0; pos < MAX_POS; pos++) {
 		stream_t* s = &streams[pos];
@@ -101,24 +105,31 @@ bool l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr) {
 
 			if (hdr->len == 0) {
 				ps->msgNo++; // increment seq number
-				uint16_t base = pageOff(ps->head_page) + (ps->head_off);
-				ps->msgLen = g_pool[base];
-				ps->head_off++;
-				if (ps->head_off == UNIT) {
-					ps->head_page = g_next[ps->head_page];
-					ps->head_off = 0;
-				}
-				base = pageOff(ps->head_page) + (ps->head_off);
-				ps->msgLen |= (g_pool[base]) << 8;
-				ps->head_off++;
-				if (ps->head_off == UNIT) {
-					ps->head_page = g_next[ps->head_page];
-					ps->head_off = 0;
+
+				for (int i = 0; i < sizeof(ps->msgLen); i++) {
+					uint16_t base = pageOff(ps->head_page) + (ps->head_off);
+					ps->msgLen |= (g_pool[base]) << (8*i);
+					ps->head_off++;
+					if (ps->head_off == UNIT) {
+						ps->head_page = g_next[ps->head_page];
+						ps->head_off = 0;
+					}
 				}
 
 				if (ps->msgLen == 0) { //  no more message pending
 					ps->head_page = INVALID_PAGE;
 					ps->tail_page = INVALID_PAGE;
+				}
+				else { //  get tx order
+					for (int i = 0; i < sizeof(ps->txOrder); i++) {
+						uint16_t base = pageOff(ps->head_page) + (ps->head_off);
+						ps->txOrder |= (g_pool[base]) << (8 * i);
+						ps->head_off++;
+						if (ps->head_off == UNIT) {
+							ps->head_page = g_next[ps->head_page];
+							ps->head_off = 0;
+						}
+					}
 				}
 				return true;
 			}
@@ -134,6 +145,12 @@ bool l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr) {
 }
 
 bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr, uint8_t* gatewayL2Addr) {
+
+	// for the same prio select a stream with lower txOrder
+	TxOrderType currTxOrder = ~0U;
+	prio_stream_t* psTx = NULL;
+	stream_t* sTx = NULL;
+
 	for (int pos = 0; pos < MAX_POS; pos++) {
 		stream_t* s = &streams[pos];
 		uint8_t gatewaySubnet = (s->gateway & 0xFF00) >> 8;
@@ -147,54 +164,17 @@ bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr,
 			continue;
 		}
 
-		*dstAddr = s->dst;
-		*gatewayL2Addr = s->gateway;
-
-		queueMsg(l4Pkt, ps);
-#if 0
-		// set hdr
-		L4Hdr* hdr = &l4Pkt->hdr;
-		hdr->msgNo = ps->msgNo;
-		hdr->len = (ps->msgLen > L4_FRAME_SIZE)? (ps->msgLen - L4_FRAME_SIZE): 0; // remaining msg len
-
-		// feed packet
-		l4Pkt->head_page = ps->head_page;
-		l4Pkt->head_off = ps->head_off;
-
-		// debug
-		uint16_t base = pageOff(l4Pkt->head_page) + (uint16_t)l4Pkt->head_off;
-
-		// debug
-
-		uint8_t currHd = l4Pkt->head_page;
-		uint8_t len = min(L4_FRAME_SIZE, ps->msgLen); // write until min msg len
-
-		while (len > 0) {
-			if (/*currHd == ps->tail_page ||*/
-				len < (UNIT)) { // reached end
-				l4Pkt->tail_page = currHd;
-
-				if (currHd == ps->head_page) {
-					l4Pkt->tail_used = ps->head_off + len;
-				}
-				else {
-					l4Pkt->tail_used = /*currHd == ps->tail_page ? min(len, ps->tail_used) :*/ len;
-				}
-				base = pageOff(l4Pkt->tail_page) + (uint16_t)l4Pkt->tail_used;
-				break;
-			}
-
-			if (currHd == l4Pkt->head_page) {
-				len -= (UNIT - l4Pkt->head_off);
-			}
-			else {
-				len -= UNIT;
-			}
-
-			currHd = g_next[currHd];
-			
+		if (currTxOrder > ps->txOrder) {
+			currTxOrder = ps->txOrder;
+			psTx = ps;
+			sTx = s;
 		}
-#endif
+	}
+
+	if (psTx != NULL) {
+		queueMsg(l4Pkt, psTx);
+		*dstAddr = sTx->dst;
+		*gatewayL2Addr = sTx->gateway;
 		return true;
 	}
 	return false;

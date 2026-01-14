@@ -1748,7 +1748,7 @@ void expectTxMultiFrame(MockUart& mock,
         expectHdr(mock, UART, hdr);
     }
 
-    size = UNIT - (size + (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG? sizeof(L4Hdr::len): 0));
+    size = UNIT - (size + (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG? sizeof(L4Hdr::len) + sizeof(txOrder) : 0));
     uint8_t len = UART_FIFO_SIZE - size - (type != TxMultiFrameType::TX_MULTI_FRAME_CONT ? sizeof(PduHdr): 0);
     bool expectCrcCall = false;
 

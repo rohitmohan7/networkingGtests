@@ -17,9 +17,12 @@ typedef struct __attribute__((packed)) {
     uint8_t  tail_used;
 } L4Pkt;
 
+typedef uint16_t TxOrderType;
+
 typedef struct {
     uint8_t msgNo; // curr Msg No
     uint16_t msgLen; // cur Msg Remaining len cap at uint16_t
+    TxOrderType txOrder;
 
     uint8_t head_page;
     uint8_t tail_page;
@@ -32,8 +35,12 @@ typedef struct
     uint16_t dst;
     uint16_t gateway;
 
+    
+
     prio_stream_t prio[MAX_PRIORITY];
 } stream_t;
+
+extern TxOrderType txOrder;
 
 extern stream_t streams[MAX_POS];
 

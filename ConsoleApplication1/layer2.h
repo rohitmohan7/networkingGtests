@@ -15,8 +15,6 @@ static inline L2TxPktDesc* L2_GetPktDesc(uint8_t port)
 #endif
 
 #define L2_PKT_TYPE_INVALID 0xFF
-#define L2_PKT_TYPE_ACK 1
-#define L2_PKT_TYPE_NAK 2
 #define L2_PKT_TYPE_MST 0x80
 #define L2_PKT_TYPE_PDU 3
 
@@ -78,8 +76,6 @@ typedef struct __attribute__((packed)) L2Pkt {
 
 typedef struct __attribute__((packed)) {
 	L2Pkt l2TxPkt;
-	uint8_t time;
-	uint8_t retry;
 } L2TxPktDesc; // 9 bytes
 //_Static_assert(sizeof(L2TxPktDesc) == 9, "L2TxPktDesc wrong size");
 

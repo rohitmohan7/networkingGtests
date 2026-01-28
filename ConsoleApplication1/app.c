@@ -3,9 +3,7 @@
 #include "layer4.h"
 
 
-
-
-bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority)
+bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, bool reqAck)
 {
     if ((data == NULL) || (len == 0U)) { return false; }
     if ((pos >= (uint16_t)MAX_POS) || (priority >= (uint8_t)MAX_PRIORITY)) { return false; }
@@ -93,7 +91,9 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority)
         s->tail_used = 0U;
 
         // stream is empty init with msg len
-        s->msgLen = len;
+        s->txMsgHdr.msgLen = len;
+      //  s->txMsgHdr.msgFlgs = 0;
+        s->txMsgHdr.msgFlgs = (0 & ~L4_MSG_FLAG_TYPE_ACK) | (reqAck ? L4_MSG_FLAG_REQ_ACK : 0);
 
         // set tx Order
         s->txOrder = txOrder;
@@ -136,7 +136,7 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority)
     }
 
     
-    for (int i = 0; i < sizeof(((L4Hdr*)0)->len); i++) { // zero out msg len
+    for (int i = 0; i < sizeof(MsgLenType); i++) { // zero out msg len
         if (s->tail_used == UNIT) { 
             break;
         }

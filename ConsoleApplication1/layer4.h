@@ -4,41 +4,47 @@
 
 #define MAX_PRIORITY 3
 
-typedef struct __attribute__((packed)) {
-    uint8_t msgNo;
-    uint16_t len;
-} L4Hdr;
-
-typedef struct __attribute__((packed)) {
-    L4Hdr hdr;
-    uint8_t  head_page;
-    uint8_t  tail_page;
-    uint8_t  head_off;       /* 0..UNIT-1 */
-    uint8_t  tail_used;
-} L4Pkt;
+#define L4_MSG_FLAG_TYPE_ACK 0x1
+#define L4_MSG_FLAG_REQ_ACK 0x2
 
 typedef uint16_t TxOrderType;
+typedef uint16_t MsgLenType;
+
+typedef struct __attribute__((packed)) {
+    uint8_t msgNo;
+    uint8_t msgFlgs;
+    MsgLenType msgLen;
+} L4Hdr;
+
+
+typedef struct stream_t stream_t;   // forward declaration
 
 typedef struct {
-    uint8_t msgNo; // curr Msg No
-    uint16_t msgLen; // cur Msg Remaining len cap at uint16_t
+    L4Hdr txMsgHdr;
     TxOrderType txOrder;
 
     uint8_t head_page;
     uint8_t tail_page;
     uint8_t  head_off;       /* 0..UNIT-1 */
     uint8_t  tail_used;
+
+    uint8_t retryCnt;
+    uint8_t retryTmr;
+
+    stream_t* s;
 } prio_stream_t;
 
-typedef struct
+typedef struct stream_t
 {
     uint16_t dst;
     uint16_t gateway;
-
-    
-
     prio_stream_t prio[MAX_PRIORITY];
 } stream_t;
+
+typedef struct __attribute__((packed)) {
+    L4Hdr hdr;
+    prio_stream_t * s;
+} L4Pkt;
 
 extern TxOrderType txOrder;
 
@@ -47,6 +53,10 @@ extern stream_t streams[MAX_POS];
 bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr, uint8_t* gatewayL2Addr);
 
 bool l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr);
+
+void l4TxCmplt(L4Pkt* l4Pkt);
+
+void getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t* len, uint8_t * txHd, uint8_t * txHdOfst, uint8_t txLen);
 
 void l4Init();
 #endif

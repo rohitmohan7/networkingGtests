@@ -140,11 +140,9 @@ void l1Tx(UART_Type* UARTptr, uint8_t port) {
 		uint8_t  len;
 
 		txCmplt = l2GetTxPkt(port, &ptr, &len, txIndex[port], txLen, XFER_TX); // return remaining len
-		uint8_t txLenMin = min(len, txLen);
-		txLen -= txLenMin;
-		txIndex[port] += txLenMin;
-		l1UARTWriteNonBlocking(UARTptr, ptr, txLenMin);
-
+		txLen -= len;
+		txIndex[port] += len;
+		l1UARTWriteNonBlocking(UARTptr, ptr, len);
 	} while (txLen > 0 && !txCmplt);
 	/* Enable transmitter interrupt. */
 	if (txCmplt) {
@@ -164,12 +162,10 @@ void validateTxEcho(UART_Type* UARTptr, uint8_t port, uint8_t count) {
 		uint8_t  len;
 
 		txCmplt = l2GetTxPkt(port, &ptr, &len, rxIndex[port], count, XFER_RX_ECHO); // return remaining len
-		uint8_t rxLenMin = min(len, count);
+		bool valid = l1UARTCmpNonBlocking(UARTptr, ptr, len);
 
-		bool valid = l1UARTCmpNonBlocking(UARTptr, ptr, rxLenMin);
-
-		count = (count > len)? (count - len): 0;
-		rxIndex[port] += rxLenMin;
+		count = (count > len) ? (count - len) : 0;
+		rxIndex[port] += len;
 
 		if (!valid) {
 			l1AbortTx(UARTptr, port);

@@ -14,6 +14,10 @@ bool l3Ack(L3Pkt* l3Pkt) {
 	return l4Ack(&l3Pkt->l4Pkt, l3Hdr->prio, l3Hdr->dst);
 }
 
+void l3TxCmplt(L3Pkt* l3Pkt) {
+	l4TxCmplt(&l3Pkt->l4Pkt);
+}
+
 bool getl3Pkt(L3Pkt* l3Pkt, bool* xferMst, uint8_t* addr, uint8_t port) {
 	bool checkPrioPending = false;
 	*xferMst = false;
@@ -31,4 +35,10 @@ bool getl3Pkt(L3Pkt* l3Pkt, bool* xferMst, uint8_t* addr, uint8_t port) {
 	}
 	return false;
 	//return checkPrioPending;
+}
+
+void getL3PktFrag(L3Pkt* l3Pkt, uint8_t** ptr, uint8_t* len, uint8_t * txHd, uint8_t* txHdOfst, uint8_t txLen) {
+
+	// check here if its a forwarded pkt ?
+	getL4PktFrag(&l3Pkt->l4Pkt, ptr, len, txHd, txHdOfst, txLen);
 }

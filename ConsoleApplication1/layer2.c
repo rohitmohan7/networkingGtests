@@ -6,6 +6,7 @@ uint16_t l2TmLstRx[MAX_PORT];
 L2TxPktDesc l2TxPktDesc[MAX_PORT];
 L2RxPktDesc l2RxPktDesc[MAX_PORT];
 uint8_t maxL2Addr[MAX_PORT];
+static bool txActive[MAX_PORT];
 
 #define L2_RETRY_THRESHOLD 3
 
@@ -15,38 +16,20 @@ void l2Init() {
 	memset(l2TxPktDesc, 0xFF, sizeof l2TxPktDesc);
 	memset(maxL2Addr, 0xFF, sizeof maxL2Addr);
 	memset(l2RxPktDesc, 0xFF, sizeof l2RxPktDesc);
+	memset(txActive, 0x0, sizeof txActive);
 	for (int port = 0; port < MAX_PORT; port++) {
 		l2RxPktDesc[port].abort = false;
 	}
 }
 
 void l2TxCmplt(uint8_t port) {
-	// start timer 
-
-	if (l2TxPktDesc[port].l2TxPkt.hdr.type == L2_PKT_TYPE_ACK ||
-		l2TxPktDesc[port].l2TxPkt.hdr.type == L2_PKT_TYPE_NAK) {
-		// if its an ACK/NAK response remove msg
-		l2TxPktDesc[port].time = 0xFF;
-		l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
-	}
-	else {
-		l2TxPktDesc[port].time = 0x0;
-	}
-
-#if 0
-	switch (l2TxPktDesc[port].l2TxPkt.hdr.type) {
-	case L2_PKT_TYPE_MST:
-		break;
-	}
-#endif
+	txActive[port] = false;
+	l3TxCmplt(&l2TxPktDesc[port].l2TxPkt.msg.pdu);
 }
 
 void l2AbortTx(uint8_t port) {
-	l2TxPktDesc[port].time = 0xFF; // reprime message for tx
 	mst_token[port] = false;
-	if (l2TxPktDesc[port].l2TxPkt.hdr.type == L2_PKT_TYPE_MST) {
-		l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
-	}
+	txActive[port] = false;
 }
 
 /*void l2Send(L2Packet) {
@@ -73,11 +56,24 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 		L4Pkt* l4pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu.l4Pkt;
 		if (idx < sizeof(PduHdr)) {
 			*len = sizeof(PduHdr) - idx;
-			tx_pdu_head[xfer][port] = l4pkt->head_page;
-			tx_pdu_hd_off[xfer][port] = l4pkt->head_off;
+			tx_pdu_head[xfer][port] = l4pkt->s->head_page;
+			tx_pdu_hd_off[xfer][port] = l4pkt->s->head_off;
 			return false;
 		}
 		else {
+
+			if (tx_pdu_head[xfer][port] == INVALID_PAGE) { // tx complete give crc
+				*ptr = &l2TxPktDesc[port].l2TxPkt.crc;
+				*len = sizeof(l2TxPktDesc[port].l2TxPkt.crc);
+				return true;
+			}
+
+			getL3PktFrag(&l2TxPktDesc[port].l2TxPkt.msg.pdu, 
+						  ptr, len, 
+						 &tx_pdu_head[xfer][port],
+						 &tx_pdu_hd_off[xfer][port],
+						 txRxFifoLen);
+#if 0
 			// msg offset
 			if (tx_pdu_head[xfer][port] == INVALID_PAGE) {
 				*ptr = &l2TxPktDesc[port].l2TxPkt.crc;
@@ -115,20 +111,11 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 			else {
 				tx_pdu_hd_off[xfer][port] += txRxFifoLen;
 			}
+#endif
 		}
 	}
 
 	return false;
-}
-
-void l2SendNak(uint8_t port, uint8_t rsn) {
-	l2TxPktDesc[port].l2TxPkt.hdr.addr = (uint8_t) port_addr[port];  // Best way to find next table in line ? 
-	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_NAK;
-	l2TxPktDesc[port].l2TxPkt.msg.nak.reason = rsn; // so we can select next MST
-	l2TxPktDesc[port].time = 0xFF;
-
-	l2TxPktDesc[port].l2TxPkt.crc = 0xFF;
-	//l1StartTx(port);
 }
 
 
@@ -138,7 +125,6 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 	if ((l2TmLstRx[port] > INTER_CHAR_SILENCE) && 
 		(l2TmLstRx[port] < INTER_FRAME_SILENCE)) { // abort Rx Todo
 		l2RxPktDesc[port].abort = true;
-		l2SendNak(port, L2_NAK_RSN_CHR_TMEOUT);
 	}
 
 	l2TmLstRx[port] = 0;
@@ -148,18 +134,11 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 	}
 
 	// validate message early
-	if (mst_token[port]) {
-		if (l2TxPktDesc[port].l2TxPkt.hdr.type == L2_PKT_TYPE_INVALID) { // if there is no active Tx packet abort RX and give up MST token or RX size is greater than NAK/ACK fail early
-			mst_token[port] = false;
-			l2RxPktDesc[port].abort = true;
-			return len;
-		}
+	if (mst_token[port]) { // there should be no active RX when mst
+		l2AbortTx(port);
+		l2RxPktDesc[port].abort = true;
 
-		if (idx + rxLen > (sizeof(L2Hdr) + sizeof(l2RxPktDesc[port].l2RxPkt.msg.nak))) {
-			l2AbortTx(port);
-			l2RxPktDesc[port].abort = true;
-			return len;
-		}
+		// maybe some special message needs response from slave?
 	}
 	else {
 		if (idx >= sizeof(l2RxPktDesc[port].l2RxPkt.hdr.addr)) {
@@ -173,9 +152,6 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 	if (idx < sizeof(L2Hdr)) { // give header
 		*ptr = ((uint8_t*)&l2RxPktDesc[port].l2RxPkt.hdr) + idx;
 		len = sizeof(L2Hdr) - idx;
-		if (mst_token[port]) { // give enough space for NAK
-			len += sizeof(l2RxPktDesc[port].l2RxPkt.msg.nak);
-		}
 		return len; // let Hdr finish first
 	}
 
@@ -183,18 +159,16 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 	switch (l2RxPktDesc[port].l2RxPkt.hdr.type) {
 	case L2_PKT_TYPE_MST:
 
-		if (idx + rxLen > (sizeof(L2Hdr) + sizeof(l2RxPktDesc[port].l2RxPkt.crc))) {
-			l2SendNak(port, L2_NAK_RSN_INV_LEN); // queue NAK
+		if (idx + rxLen > (sizeof(L2Hdr) + sizeof(l2Crc))) {
 			l2RxPktDesc[port].abort = true;
 			return len;
 		}
 
 		// next is CRC
-		*ptr = ((uint8_t*)&l2RxPktDesc[port].l2RxPkt.msg.mst.mstCrc);
+		*ptr = ((uint8_t*)&l2RxPktDesc[port].l2RxPkt.crc);
 		len = 1;
 		return len;
 	default:
-		l2SendNak(port, L2_NAK_RSN_INV_TYPE);
 		l2RxPktDesc[port].abort = true;
 		return len;
 	}
@@ -216,30 +190,26 @@ uint8_t getNxtMst(uint8_t port, uint8_t addr) {
 	return next;
 }
 
+static inline void l2StartTx(uint8_t port) {
+	l2TmLstRx[port] = 0.0;
+	txActive[port] = true;
+	l1StartTx(port);
+}
+
 void l2SendMst(uint8_t port, uint8_t addr) {
 	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_MST;
 	l2TxPktDesc[port].l2TxPkt.msg.mst.nextMst = getNxtMst(port, addr); // so we can select next MST
-	l2TxPktDesc[port].time = 0xFF;
 	l2TxPktDesc[port].l2TxPkt.crc = 0xFF; //TODO
-	l1StartTx(port);
+	l2StartTx(port);
 }
 
 
 void l2SendPdu(uint8_t port, bool mstPass, uint8_t addr) {
 	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_PDU | (mstPass? L2_PKT_TYPE_MST: 0);
-	l2TxPktDesc[port].time = 0xFF;
 	l2TxPktDesc[port].l2TxPkt.crc = 0xFF; // TODO
-	l1StartTx(port);
-}
-void l2TxRetry(uint8_t port) {
-	l2TxPktDesc[port].time = 0xFF;
-	l2TxPktDesc[port].retry++;
-	if (l2TxPktDesc[port].retry > L2_RETRY_THRESHOLD) { // drop
-		// should we pass MST token ?
-		l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
-	}
+	l2StartTx(port);
 }
 
 void l2CmtRx(port) {
@@ -259,50 +229,13 @@ void l2CmtRx(port) {
 
 	bool crcValid = l2RxPktDesc[port].l2RxPkt.crc == 0xFF;
 	// validate CRC TODO
-	if (mst_token[port]) {
-		if (!crcValid) {
-			l2TxRetry(port);
-			return;
-		}
-
-		// collision conditions
-		bool notAckNak =
-			(rxType != L2_PKT_TYPE_ACK) && (rxType != L2_PKT_TYPE_NAK);
-
-		bool addrErr = l2RxPktDesc[port].l2RxPkt.hdr.addr != l2TxPktDesc[port].l2TxPkt.hdr.addr;
-
-		if (notAckNak || addrErr) {
-			l2AbortTx(port);
-			return;
-		}
-	}
-	else if (!crcValid) {
-		l2SendNak(port, L2_NAK_RSN_INV_CRC);
+	if (!crcValid) { // silently drop
 		return;
 	}
 
 	switch (rxType) {
 	case L2_PKT_TYPE_MST:
 		mst_token[port] = true;
-		break;
-	case L2_PKT_TYPE_ACK: // not for slave
-		l2TxPktDesc[port].time = 0xFF; // reset msg timer
-		
-#ifndef TRANSPORT_ACK
-		// FOR NOW LET L3 ACK
-		if (l3Ack(&l2TxPktDesc[port].l2TxPkt.msg.pdu)) {
-			l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
-		}
-		else {
-			// false means mmessage frames are still pending send immediatly
-			l2SendPdu(port, false, l2TxPktDesc[port].l2TxPkt.hdr.addr);
-		}
-#endif
-
-		
-		break;
-	case L2_PKT_TYPE_NAK: // not applicable for slave
-		l2TxRetry(port);
 		break;
 	default:
 		break;
@@ -314,26 +247,14 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 		if (maxL2Addr[port] <= 1) { // only single device in port consider dead
 			continue;
 		}
-
-		if (mst_token[port] && l2TxPktDesc[port].time != 0xFF) { // prevent rollover
-			uint8_t t = l2TxPktDesc[port].time;
-			l2TxPktDesc[port].time = (ms > (0xFFu - t)) ? 0xFF : (uint8_t)(t + ms);
-
-			if (l2TxPktDesc[port].l2TxPkt.hdr.type == L2_PKT_TYPE_MST &&
-				l2TxPktDesc[port].time > (LINE_SILENT / 2)) { // retry with next mst
-				l2SendMst(port, l2TxPktDesc[port].l2TxPkt.msg.mst.nextMst);
-			}
-			//l2TmLstRx[port] = 0; // start Rx timer after Tx has been acked
-		}
 		
-		if (l2TxPktDesc[port].l2TxPkt.hdr.type != L2_PKT_TYPE_INVALID &&
-			l2TxPktDesc[port].time == 0xFF) { // if there is pending TX wait for it to complete
+		// increment rx timer
+		if (txActive[port]) {
 			l2TmLstRx[port] = 0;
 		}
 		else {
 			l2TmLstRx[port] += ms;
 		}
-		// increment rx timer
 
 		if (l2TmLstRx[port] > (((uint8_t)port_addr[port]) * LINE_SILENT)) {
 			mst_token[port] = true;
@@ -352,6 +273,10 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 					else {
 						l2SendMst(port, getNxtMst(port, port_addr[port]));
 					}
+				}
+				else if (l2TxPktDesc[port].l2TxPkt.hdr.type == L2_PKT_TYPE_MST &&
+					l2TmLstRx[port] > (LINE_SILENT / 2)) {
+					l2SendMst(port, l2TxPktDesc[port].l2TxPkt.msg.mst.nextMst);
 				}
 			}
 #if 0

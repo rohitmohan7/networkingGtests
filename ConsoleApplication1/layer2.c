@@ -53,11 +53,13 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 		*len += sizeof(l2TxPktDesc[port].l2TxPkt.crc);
 		return true;
 	case L2_PKT_TYPE_PDU:
-		L4Pkt* l4pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu.l4Pkt;
+		L3Pkt* l3Pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu;
 		if (idx < sizeof(PduHdr)) {
 			*len = sizeof(PduHdr) - idx;
-			tx_pdu_head[xfer][port] = l4pkt->s->head_page;
-			tx_pdu_hd_off[xfer][port] = l4pkt->s->head_off;
+
+			tx_pdu_head[xfer][port] = getL3PktHd(l3Pkt, &tx_pdu_hd_off[xfer][port]);
+			//tx_pdu_head[xfer][port] = ps->head_page;
+			//tx_pdu_hd_off[xfer][port] = ps->head_off;
 			return false;
 		}
 		else {
@@ -205,8 +207,9 @@ void l2SendMst(uint8_t port, uint8_t addr) {
 }
 
 
-void l2SendPdu(uint8_t port, bool mstPass, uint8_t addr) {
-	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
+void l2SendPdu(uint8_t port, bool mstPass) {
+	//l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
+	l2TxPktDesc[port].l2TxPkt.hdr.addr = setL3Hdr(&l2TxPktDesc[port].l2TxPkt.msg.pdu, port);
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_PDU | (mstPass? L2_PKT_TYPE_MST: 0);
 	l2TxPktDesc[port].l2TxPkt.crc = 0xFF; // TODO
 	l2StartTx(port);
@@ -266,9 +269,8 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 				if (l2TxPktDesc[port].l2TxPkt.hdr.type == L2_PKT_TYPE_INVALID) {// pas MST token immediatly no packet to send
 					// first request pkt from l3
 					bool passMST;
-					uint8_t addr;
-					if (getl3Pkt(&l2TxPktDesc[port].l2TxPkt.msg.pdu, &passMST, &addr, port)) {
-						l2SendPdu(port, passMST, addr);
+					if (getl3Pkt(port, &l2TxPktDesc[port].l2TxPkt.msg.pdu, &passMST)) {
+						l2SendPdu(port, passMST);
 					}
 					else {
 						l2SendMst(port, getNxtMst(port, port_addr[port]));

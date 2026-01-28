@@ -32,8 +32,10 @@ void setPortAddr() {
                 for (int peerPort = 0; peerPort < MAX_PORT; peerPort++) {
                     if (topology[pos].subnet[peerPort] == topology[myPos].subnet[port]) {
                         // for now set addr directly (TODO loadbalance equal hops + routing table gateway)
-                        streams[pos].gateway = streams[pos].dst = (topology[pos].subnet[port] << 8) | l2Addr[port];
-                        
+                        //streams[pos].gateway = streams[pos].dst = (topology[pos].subnet[port] << 8) | l2Addr[port];
+                        l3RouteTable[pos] = 
+                        l3AddrTable[pos] = (topology[pos].subnet[port] << 8) | l2Addr[port];
+
                         l2Addr[port]++;
                     }
                 }

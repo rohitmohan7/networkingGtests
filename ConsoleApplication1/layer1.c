@@ -5,9 +5,6 @@
 #include <assert.h>
 
 
-#define XFER_TX 0
-#define XFER_RX_ECHO 1
-
 UART_Type* UART[MAX_PORT];
 
 static uint16_t txIndex[MAX_PORT];

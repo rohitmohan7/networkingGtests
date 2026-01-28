@@ -4,6 +4,9 @@
 #include "allocator.h"
 #include "layer3.h"
 
+#define XFER_TX 0
+#define XFER_RX_ECHO 1
+
 extern bool mst_token[MAX_PORT];
 extern uint8_t maxL2Addr[MAX_PORT];
 

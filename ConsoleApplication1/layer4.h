@@ -30,8 +30,6 @@ typedef struct {
 
     uint8_t retryCnt;
     uint8_t retryTmr;
-
-    stream_t* s;
 } prio_stream_t;
 
 typedef struct stream_t
@@ -43,20 +41,26 @@ typedef struct stream_t
 
 typedef struct __attribute__((packed)) {
     L4Hdr hdr;
-    prio_stream_t * s;
+    uint16_t sIdx;
+    uint8_t psIdx;
 } L4Pkt;
 
 extern TxOrderType txOrder;
 
 extern stream_t streams[MAX_POS];
 
-bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr, uint8_t* gatewayL2Addr);
+//bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr);
+bool getL4Pkt(L4Pkt* l4Pkt, uint8_t pos, uint8_t prio);
+
+void setL4Hdr(L4Pkt* l4Pkt);
 
 bool l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr);
 
 void l4TxCmplt(L4Pkt* l4Pkt);
 
 void getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t* len, uint8_t * txHd, uint8_t * txHdOfst, uint8_t txLen);
+
+uint8_t getL4PktHd(L4Pkt* l4Pkt, uint8_t* offset);
 
 void l4Init();
 #endif

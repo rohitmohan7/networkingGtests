@@ -1461,13 +1461,14 @@ extern "C" bool l1UARTCmpNonBlocking(UART_Type* UART, const uint8_t* data, size_
     EXPECT_NE(g_mock, nullptr);
     return  g_mock->l1UARTCmpNonBlocking(UART, data, length);
 }
-#if 0
+
 TEST_P(MultiHop, addr) {
     for (int port = 0; port < MAX_PORT; port++) {
         EXPECT_EQ(port_addr[port], GetParam().portAddr[port]);
     }
 }
 
+#if 0
 TEST_P(MultiHop, mstPassFail) {
 
     MockUart mock;
@@ -1618,6 +1619,7 @@ TEST_P(MultiHop, mstPassMsg) {
 }
 #endif
 
+
 #define L2_FRAME_SIZE (RS485_FRAME_SIZE - (sizeof(L2Hdr) + sizeof(((L2Pkt*)0)->crc)))
 #define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
 #define L4_FRAME_SIZE (L3_FRAME_SIZE - sizeof(L4Hdr))
@@ -1685,27 +1687,6 @@ void sendMstToken(MockUart& mock, UART_Type* UART, const uint8_t & l2Addr, const
     UART->RCFIFO = 0;
 }
 
-void sendAck(MockUart& mock, UART_Type* UART, const uint8_t port) {
-    // send ACK
-    std::array<uint8_t, 3> pkt{ { 0x1, L2_PKT_TYPE_ACK, 0xFF } };
-
-    UART->S1 |= UART_S1_RDRF_MASK;
-    UART->RCFIFO = pkt.size();
-
-    // call read ACK
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), pkt.size()))
-        .Times(1)
-        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
-        std::memcpy(data, pkt.data(), len);
-            }))
-        .RetiresOnSaturation();
-
-    l1TransferHandleIRQ(UART, port);
-
-    UART->S1 &= ~UART_S1_RDRF_MASK;
-    UART->RCFIFO = 0;
-}
-
 enum class TxMultiFrameType {
     TX_MULTI_FRAME_FIRST_MSG,
     TX_MULTI_FRAME_NEW_MSG,
@@ -1738,9 +1719,6 @@ void expectTxMultiFrame(MockUart& mock,
         UART->S1 |= UART_S1_TC_MASK;
         l1TransferHandleIRQ(UART, port);
         UART->S1 &= ~UART_S1_TC_MASK;
-
-        // send ACK
-        sendAck(mock, UART, port);
     }
 
     if (type != TxMultiFrameType::TX_MULTI_FRAME_CONT) {
@@ -1748,7 +1726,7 @@ void expectTxMultiFrame(MockUart& mock,
         expectHdr(mock, UART, hdr);
     }
 
-    size = UNIT - (size + (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG? sizeof(L4Hdr::len) + sizeof(txOrder) : 0));
+    size = UNIT - (size + (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG? sizeof(L4Hdr::msgLen) + sizeof(txOrder) : 0));
     uint8_t len = UART_FIFO_SIZE - size - (type != TxMultiFrameType::TX_MULTI_FRAME_CONT ? sizeof(PduHdr): 0);
     bool expectCrcCall = false;
 
@@ -1828,8 +1806,8 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
         }
 
         // send msg
-        appSend(msg.data(), MSG_SIZE, 1, 0);
-        appSend(msg2.data(), MSG2_SIZE, 1, 0);
+        appSend(msg.data(), MSG_SIZE, 1, 0, false);
+        appSend(msg2.data(), MSG2_SIZE, 1, 0, false);
 
         // send MST
         sendMstToken(mock, uart_ptrs[port], l2Addr, port);
@@ -1840,7 +1818,7 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
         pduHdr = PduHdr{
             .l2hdr = { 0x1, L2_PKT_TYPE_PDU },
             .l3hdr = { GetParam().portAddr[port], 0x101, 1, 0 },
-            .l4hdr = { 0, 0 }
+            .l4hdr = { 0, 0, 0 }
         };
 
         //expectHdr(mock, uart_ptrs[port], pduHdr);
@@ -1942,7 +1920,6 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
     netTick(INTER_FRAME_SILENCE + 1);
 #endif
 }
-
 
 //TEST_P(MultiHop, l2test) {
 //

@@ -60,10 +60,9 @@ void getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t* len, uint8_t* txHd, uint
 	uint16_t ofst = pageOff(s->head_page) + (uint16_t)(s->head_off);
 	uint16_t prioTxCnt = base - ofst;
 	
-	// cap tx len to min of msg len/Frame size/Fifo size
+	// cap tx len to min of msg len/Frame size
 	*len = min((UNIT - (*txHdOfst)), 
-			min((s->txMsgHdr.msgLen - prioTxCnt),
-				min(txLen, (L4_FRAME_SIZE - prioTxCnt))));
+			min((s->txMsgHdr.msgLen - prioTxCnt), (L4_FRAME_SIZE - prioTxCnt)));
 #if 0
 	if ((*txHd) == s->tail_page) {
 		*len -= (UNIT - s->tail_used);
@@ -78,9 +77,9 @@ void getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t* len, uint8_t* txHd, uint
 	if (*len <= txLen) { // we are at the end of current page
 		*txHd = g_next[(*txHd)];
 		*txHdOfst = 0;
-		//return false;
 	}
 	else {
+		*len = min(txLen, *len);
 		*txHdOfst += *len;
 	}
 

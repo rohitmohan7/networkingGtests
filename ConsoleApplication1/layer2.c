@@ -61,7 +61,13 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 		*len = lenEcho = sizeof(L2Hdr) - idx;
 	}
 
-	switch (l2TxPktDesc[port].l2TxPkt.hdr.type) {
+	uint8_t type = l2TxPktDesc[port].l2TxPkt.hdr.type;
+
+	if (type & ~L2_PKT_TYPE_MST) {
+		type &= ~L2_PKT_TYPE_MST;
+	}
+
+	switch (type) {
 	case L2_PKT_TYPE_MST:
 		// next is CRC
 		*len += sizeof(l2TxPktDesc[port].l2TxPkt.crc);

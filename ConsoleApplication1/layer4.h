@@ -6,6 +6,7 @@
 
 #define L4_MSG_FLAG_TYPE_ACK 0x1
 #define L4_MSG_FLAG_REQ_ACK 0x2
+#define L4_MSG_FLAG_STREAM_PENDING 0x4
 
 typedef uint16_t TxOrderType;
 typedef uint16_t MsgLenType;
@@ -64,7 +65,11 @@ extern TxOrderType txOrder;
 extern stream_t streams[MAX_POS][MAX_PRIORITY];
 
 //bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr);
-bool getL4Pkt(L4Pkt* l4Pkt, uint8_t pos, uint8_t prio);
+bool getL4Pkt(L4Pkt* l4Pkt, uint16_t pos, uint8_t prio);
+
+bool l4StrmEmpty(uint16_t pos, uint8_t prio);
+
+bool l4StrmEmptyAftFrme(uint16_t pos, uint8_t prio);
 
 void setL4Hdr(L4Pkt* l4Pkt);
 
@@ -75,6 +80,8 @@ void l4TxCmplt(L4Pkt* l4Pkt);
 void getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t* len, uint8_t * txHd, uint8_t * txHdOfst, uint8_t txLen);
 
 uint8_t getL4PktHd(L4Pkt* l4Pkt, uint8_t* offset);
+
+bool l4StrmPnding(uint8_t pos, uint8_t prio);
 
 void l4Init();
 #endif

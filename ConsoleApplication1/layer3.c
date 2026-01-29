@@ -6,6 +6,10 @@
 uint16_t l3AddrTable[MAX_POS];
 uint16_t l3RouteTable[MAX_SUBNET];
 
+L3Pkt lowPrioPrempt[MAX_PORT];
+
+#define LOW_PRIO_IDX 1
+
 void l3Init() {
 	//memset(port_ip, 0, sizeof port_ip);
    // setPortAddr();
@@ -35,22 +39,75 @@ uint8_t setL3Hdr(L3Pkt * l3Pkt, uint8_t port, uint8_t prio, uint16_t pos) {
 	return l3RouteTable[dstSubnet]; // return l2Addr
 }
 
+bool passMst(uint8_t prioIdx, uint16_t posIdx) {
+
+	if ((prioIdx < LOW_PRIO_IDX && !l4StrmEmptyAftFrme(posIdx, prioIdx)) ||
+		 (prioIdx >= LOW_PRIO_IDX && l4StrmPnding(posIdx, prioIdx))) {
+		/* If current high prio stream is not empty after frame xmit OR if a low prio stream is pending 
+		* dont pass MST token
+		*/
+		return false;
+	}
+
+	if (posIdx + 1 >= MAX_POS) {
+		posIdx = 0;
+		prioIdx++; // check next priority
+	}
+	else {
+		posIdx++;
+	}
+
+	uint16_t pos = posIdx;
+
+	for (uint8_t prio = prioIdx; prio < MAX_PRIORITY; prio++) {
+		for (; pos < MAX_POS; pos++) {
+			if (prio >= LOW_PRIO_IDX) { // check for pending low prio
+				if (l4StrmPnding(pos, prio)) {
+					return false;
+				}
+			} else if (!l4StrmEmpty(pos, prio)) {
+				return false;
+			}
+		}
+		pos = 0;
+	}
+	return true;
+}
+
+void l3premptLowPrioPending(L3Pkt* l3Pkt, uint16_t* pos, uint8_t* prio) {
+
+}
+
 bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 	*xferMst = false;
 	const uint8_t portSubnet = ((port_addr[port] & 0xFF00) >> 8);
 
 	for (uint8_t prio = 0; prio < MAX_PRIORITY; prio++) {
 		uint16_t dstPos = MAX_POS;
+		bool txOrderPrempt = false;
+		
 		for (uint16_t pos = 0; pos < MAX_POS; pos++) {
 			const uint8_t dstSubnet = (l3AddrTable[pos] & 0xFF00) >> 8;
 			const uint8_t gatewaySubnet = (l3RouteTable[dstSubnet] & 0xFF00) >> 8;
 			
-			if (gatewaySubnet == portSubnet && getL4Pkt(&l3Pkt->l4Pkt, pos, prio)) {
+			if (gatewaySubnet == portSubnet && 
+					getL4Pkt(&l3Pkt->l4Pkt, pos, prio)) { // prempt by txOrder and pending
+				if (dstPos != MAX_POS) {
+					txOrderPrempt = true;
+				}
 				dstPos = pos;
 			}
 		}
 
 		if (dstPos != MAX_POS) { // send highest priority in tx order
+			if (prio >= LOW_PRIO_IDX) {
+				//l3premptLowPrioPending(&l3Pkt->l4Pkt, &dstPos, &prio);
+				*xferMst = passMst(prio, dstPos);
+			}
+			else if (prio < LOW_PRIO_IDX) { 
+				// check if end of all prio streams before passing mst
+				*xferMst = txOrderPrempt || passMst(prio, dstPos);
+			}
 			*l2Addr = setL3Hdr(l3Pkt, port, prio, dstPos);
 			return true;
 		}

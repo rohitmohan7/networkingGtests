@@ -139,7 +139,7 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, 
     }
 
     
-    for (int i = 0; i < sizeof(MsgLenType); i++) { // zero out msg len
+    for (int i = 0; i < sizeof(MsgLenType); i++) { // zero out msg len for next message in page
         if (s->tail_used == UNIT) { 
             break;
         }

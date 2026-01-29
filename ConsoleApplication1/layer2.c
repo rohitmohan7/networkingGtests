@@ -25,6 +25,8 @@ void l2Init() {
 void l2TxCmplt(uint8_t port) {
 	txActive[port] = false;
 	l3TxCmplt(&l2TxPktDesc[port].l2TxPkt.msg.pdu);
+	// prime for next msg
+	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
 }
 
 void l2AbortTx(uint8_t port) {
@@ -39,12 +41,24 @@ void l2AbortTx(uint8_t port) {
 
 bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8_t txRxFifoLen, uint8_t xfer) {
 
-	static uint8_t tx_pdu_head[XFER_DIR][MAX_PORT];
-	static uint8_t tx_pdu_hd_off[XFER_DIR][MAX_PORT];
+	static uint8_t tx_pdu_head[MAX_PORT];
+	static uint8_t tx_pdu_hd_off[MAX_PORT];
+	static uint8_t* ptrEcho;
+	static uint8_t lenEcho;
+
+	if (xfer == XFER_RX_ECHO) {
+		*ptr = ptrEcho;
+		*len = lenEcho;
+
+		if (ptrEcho == &l2TxPktDesc[port].l2TxPkt.crc) { // if this is CRC we are at the end
+			return true;
+		}
+		return false; // how to determine complete ?
+	}
 
 	if (idx < sizeof(L2Hdr)) { // give header
-		*ptr = ((uint8_t *)&l2TxPktDesc[port].l2TxPkt.hdr) + idx;
-		*len = sizeof(L2Hdr) - idx;
+		*ptr = ptrEcho = ((uint8_t *)&l2TxPktDesc[port].l2TxPkt.hdr) + idx;
+		*len = lenEcho = sizeof(L2Hdr) - idx;
 	}
 
 	switch (l2TxPktDesc[port].l2TxPkt.hdr.type) {
@@ -55,26 +69,30 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 	case L2_PKT_TYPE_PDU:
 		L3Pkt* l3Pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu;
 		if (idx < sizeof(PduHdr)) {
-			*len = sizeof(PduHdr) - idx;
+			*len = lenEcho = sizeof(PduHdr) - idx;
 
-			tx_pdu_head[xfer][port] = getL3PktHd(l3Pkt, &tx_pdu_hd_off[xfer][port]);
+			tx_pdu_head[port] = getL3PktHd(l3Pkt, &tx_pdu_hd_off[port]);
 			//tx_pdu_head[xfer][port] = ps->head_page;
 			//tx_pdu_hd_off[xfer][port] = ps->head_off;
 			return false;
 		}
 		else {
 
-			if (tx_pdu_head[xfer][port] == INVALID_PAGE) { // tx complete give crc
-				*ptr = &l2TxPktDesc[port].l2TxPkt.crc;
-				*len = sizeof(l2TxPktDesc[port].l2TxPkt.crc);
+			if (tx_pdu_head[port] == INVALID_PAGE) { // tx complete give crc
+				*ptr = ptrEcho = &l2TxPktDesc[port].l2TxPkt.crc;
+				*len = lenEcho = sizeof(l2TxPktDesc[port].l2TxPkt.crc);
 				return true;
 			}
 
 			getL3PktFrag(&l2TxPktDesc[port].l2TxPkt.msg.pdu, 
 						  ptr, len, 
-						 &tx_pdu_head[xfer][port],
-						 &tx_pdu_hd_off[xfer][port],
+						 &tx_pdu_head[port],
+						 &tx_pdu_hd_off[port],
 						 txRxFifoLen);
+
+			// prime it for echo
+			ptrEcho = *ptr;
+			lenEcho = *len;
 #if 0
 			// msg offset
 			if (tx_pdu_head[xfer][port] == INVALID_PAGE) {

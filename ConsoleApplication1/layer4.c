@@ -50,8 +50,9 @@ void setL4Hdr(L4Pkt* l4Pkt) {
 void getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t* len, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen) {
 	const uint16_t base = pageOff(*txHd) + (uint16_t)(*txHdOfst);
 	// start with first page
-	*ptr = &g_pool[base] + (*txHdOfst);
+	//*ptr = &g_pool[base] + (*txHdOfst);
 	//*len = (UNIT - (*txHdOfst));
+	*ptr = &g_pool[base];
 
 	const stream_t* s = &streams[l4Pkt->sIdx][l4Pkt->psIdx];
 
@@ -138,10 +139,72 @@ void queueMsg(L4Pkt* l4Pkt, stream_t* ps) {
 #endif
 }
 
+void clearMsgFrame(L4Pkt* l4Pkt) {
+	stream_t* s = &streams[l4Pkt->sIdx][l4Pkt->psIdx];
+	L4Hdr* txHdr = &s->txMsgHdr;
+	// free till Frame length
+	uint8_t len = (txHdr->msgLen > L4_FRAME_SIZE) ? L4_FRAME_SIZE: txHdr->msgLen;
+	while (len > 0) {
+
+		uint8_t pageLen = UNIT - s->head_off;
+
+		if (pageLen > len) { // page has another frame just advance head
+			s->head_off += len;
+		}
+		else {
+			uint8_t currPage = s->head_page;
+			s->head_page = g_next[s->head_page];
+			page_free(currPage);
+			s->head_off = 0;
+		}
+
+		len -= (pageLen > len) ? len : pageLen;
+	}
+
+	// advance stream
+	L4Hdr* hdr = &l4Pkt->hdr;
+	
+	if (s->head_page != INVALID_PAGE) {
+
+		if (hdr->msgLen == 0) {
+			txHdr->msgNo++; // increment seq number
+
+			for (int i = 0; i < sizeof(txHdr->msgLen); i++) {
+				uint16_t base = pageOff(s->head_page) + (s->head_off);
+				txHdr->msgLen |= (g_pool[base]) << (8 * i);
+				s->head_off++;
+				if (s->head_off == UNIT) {
+					s->head_page = g_next[s->head_page];
+					s->head_off = 0;
+				}
+			}
+
+			if (txHdr->msgLen == 0) { //  no more message pending
+				s->head_page = INVALID_PAGE;
+				s->tail_page = INVALID_PAGE;
+			}
+			else { //  get tx order
+				for (int i = 0; i < sizeof(s->txOrder); i++) {
+					uint16_t base = pageOff(s->head_page) + (s->head_off);
+					s->txOrder |= (g_pool[base]) << (8 * i);
+					s->head_off++;
+					if (s->head_off == UNIT) {
+						s->head_page = g_next[s->head_page];
+						s->head_off = 0;
+					}
+				}
+			}
+		}
+		else {
+			txHdr->msgLen = hdr->msgLen;
+		}
+	}
+}
+
 void l4TxCmplt(L4Pkt* l4Pkt) {
-	//if (l4Pkt->hdr.msgFlgs & ) { // this msg does not require an ack
-	//
-	//}
+	 if (!(l4Pkt->hdr.msgFlgs & L4_MSG_FLAG_REQ_ACK)) { // this msg does not require an ack, frame can be cleared from page buffer
+		 clearMsgFrame(l4Pkt);
+	 }
 }
 
 // directly enqueue next prio msg in ACK
@@ -225,7 +288,7 @@ bool getL4Pkt(L4Pkt* l4Pkt, uint8_t pos, uint8_t prio) {
 
 	stream_t* ps = &streams[pos][prio];
 	if (ps->head_page != INVALID_PAGE && 
-		ps->txOrder < currTxOrder) { // nothing to send
+		ps->txOrder <= currTxOrder) { // nothing to send
 		l4Pkt->sIdx = pos;
 		l4Pkt->psIdx = prio;
 		return true;

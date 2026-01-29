@@ -1847,7 +1847,7 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
         }
 
         // first expect hdr for second msg
-        pduHdr.l4hdr = L4Hdr{ 1, 1 };
+        pduHdr.l4hdr = L4Hdr{ 1, 0, 1 };
         //expectHdr(mock, uart_ptrs[port], pduHdr);
 
         // expect msg size single frame

@@ -16,7 +16,7 @@ typedef struct __attribute__((packed)) {
     MsgLenType msgLen;
 } L4Hdr;
 
-
+#if 0
 typedef struct stream_t stream_t;   // forward declaration
 
 typedef struct {
@@ -32,11 +32,24 @@ typedef struct {
     uint8_t retryTmr;
 } prio_stream_t;
 
+
 typedef struct stream_t
 {
-    uint16_t dst;
-    uint16_t gateway;
     prio_stream_t prio[MAX_PRIORITY];
+} stream_t;
+#endif
+
+typedef struct {
+    L4Hdr txMsgHdr;
+    TxOrderType txOrder;
+
+    uint8_t head_page;
+    uint8_t tail_page;
+    uint8_t  head_off;       /* 0..UNIT-1 */
+    uint8_t  tail_used;
+
+    uint8_t retryCnt;
+    uint8_t retryTmr;
 } stream_t;
 
 typedef struct __attribute__((packed)) {
@@ -47,7 +60,8 @@ typedef struct __attribute__((packed)) {
 
 extern TxOrderType txOrder;
 
-extern stream_t streams[MAX_POS];
+//extern stream_t streams[MAX_POS];
+extern stream_t streams[MAX_POS][MAX_PRIORITY];
 
 //bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr);
 bool getL4Pkt(L4Pkt* l4Pkt, uint8_t pos, uint8_t prio);

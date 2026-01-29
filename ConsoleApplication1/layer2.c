@@ -207,9 +207,8 @@ void l2SendMst(uint8_t port, uint8_t addr) {
 }
 
 
-void l2SendPdu(uint8_t port, bool mstPass) {
-	//l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
-	l2TxPktDesc[port].l2TxPkt.hdr.addr = setL3Hdr(&l2TxPktDesc[port].l2TxPkt.msg.pdu, port);
+void l2SendPdu(uint8_t port, bool mstPass, uint8_t addr) {
+	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_PDU | (mstPass? L2_PKT_TYPE_MST: 0);
 	l2TxPktDesc[port].l2TxPkt.crc = 0xFF; // TODO
 	l2StartTx(port);
@@ -269,8 +268,9 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 				if (l2TxPktDesc[port].l2TxPkt.hdr.type == L2_PKT_TYPE_INVALID) {// pas MST token immediatly no packet to send
 					// first request pkt from l3
 					bool passMST;
-					if (getl3Pkt(port, &l2TxPktDesc[port].l2TxPkt.msg.pdu, &passMST)) {
-						l2SendPdu(port, passMST);
+					uint8_t l2Addr;
+					if (getl3Pkt(port, &l2TxPktDesc[port].l2TxPkt.msg.pdu, &passMST, &l2Addr)) {
+						l2SendPdu(port, passMST, l2Addr);
 					}
 					else {
 						l2SendMst(port, getNxtMst(port, port_addr[port]));

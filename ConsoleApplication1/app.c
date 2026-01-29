@@ -8,8 +8,11 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, 
     if ((data == NULL) || (len == 0U)) { return false; }
     if ((pos >= (uint16_t)MAX_POS) || (priority >= (uint8_t)MAX_PRIORITY)) { return false; }
 
+#if 0
     stream_t* sp = &streams[pos];
     prio_stream_t* s = &sp->prio[priority];
+#endif
+    stream_t* s = &streams[pos][priority];
 
     /* --- Deterministic capacity check (optional but recommended) ---
      * Worst-case extra pages needed if tail has some free space:

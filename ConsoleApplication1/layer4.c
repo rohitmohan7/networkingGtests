@@ -8,38 +8,41 @@
 #define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
 #define L4_FRAME_SIZE (L3_FRAME_SIZE - sizeof(L4Hdr))
 
-#define L4_RETRY_DISABLED 0xFF
 #define L4_MAX_RETRY 3
 
-stream_t streams[MAX_POS];
+stream_t streams[MAX_POS][MAX_PRIORITY];
 
 TxOrderType txOrder = 0;
 
 void l4Init() {
 	for (int prio = 0; prio < MAX_PRIORITY; prio++) {
 		for (int pos = 0; pos < MAX_POS; pos++) {
+#if 0
 			stream_t* s = &streams[pos];
 			prio_stream_t* ps = &s->prio[prio];
-			ps->txOrder = 0;
-			memset(&ps->txMsgHdr, 0x0, sizeof(L4Hdr));
-			ps->head_page = INVALID_PAGE;
-			ps->tail_page = INVALID_PAGE;
-			ps->head_off = 0;
-			ps->tail_used = 0;
-			ps->retryCnt = L4_RETRY_DISABLED;
-			ps->retryTmr = 0;
+#endif
+			stream_t* s = &streams[pos][prio];
+			s->txOrder = 0;
+			memset(&s->txMsgHdr, 0x0, sizeof(L4Hdr));
+			s->head_page = INVALID_PAGE;
+			s->tail_page = INVALID_PAGE;
+			s->head_off = 0;
+			s->tail_used = 0;
+			s->retryCnt = 0;
+			s->retryTmr = 0;
 		}
 	}
 }
 
 uint8_t getL4PktHd(L4Pkt* l4Pkt, uint8_t* offset) {
-	*offset = streams[l4Pkt->sIdx].prio[l4Pkt->psIdx].head_off;
-	return streams[l4Pkt->sIdx].prio[l4Pkt->psIdx].head_page;
+	stream_t* s = &streams[l4Pkt->sIdx][l4Pkt->psIdx];
+	*offset = s->head_off;
+	return s->head_page;
 }
 
 void setL4Hdr(L4Pkt* l4Pkt) {
 	L4Hdr* l4PktHdr = &l4Pkt->hdr;
-	L4Hdr* txHdr = &streams[l4Pkt->sIdx].prio[l4Pkt->psIdx].txMsgHdr;
+	L4Hdr* txHdr = &streams[l4Pkt->sIdx][l4Pkt->psIdx].txMsgHdr;
 	memcpy(l4PktHdr, txHdr, (sizeof(L4Hdr) - sizeof(MsgLenType)));
 	l4PktHdr->msgLen = (txHdr->msgLen > L4_FRAME_SIZE) ? (txHdr->msgLen - L4_FRAME_SIZE) : 0; // remaining msg len
 }
@@ -50,14 +53,16 @@ void getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t* len, uint8_t* txHd, uint
 	*ptr = &g_pool[base] + (*txHdOfst);
 	//*len = (UNIT - (*txHdOfst));
 
-	const prio_stream_t* s = &streams[l4Pkt->sIdx].prio[l4Pkt->psIdx];
+	const stream_t* s = &streams[l4Pkt->sIdx][l4Pkt->psIdx];
 
 	// gate for msglen
 	uint16_t ofst = pageOff(s->head_page) + (uint16_t)(s->head_off);
 	uint16_t prioTxCnt = base - ofst;
 	
-	// cap tx len to msg len/Frame size
-	*len = min(min(min((s->txMsgHdr.msgLen - prioTxCnt), (L4_FRAME_SIZE - prioTxCnt)), txLen), (UNIT - (*txHdOfst)));
+	// cap tx len to min of msg len/Frame size/Fifo size
+	*len = min((UNIT - (*txHdOfst)), 
+			min((s->txMsgHdr.msgLen - prioTxCnt),
+				min(txLen, (L4_FRAME_SIZE - prioTxCnt))));
 #if 0
 	if ((*txHd) == s->tail_page) {
 		*len -= (UNIT - s->tail_used);
@@ -86,7 +91,7 @@ void getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t* len, uint8_t* txHd, uint
 	}
 }
 
-void queueMsg(L4Pkt* l4Pkt, prio_stream_t* ps) {
+void queueMsg(L4Pkt* l4Pkt, stream_t* ps) {
 	// set hdr
 	L4Hdr* l4PktHdr = &l4Pkt->hdr;
 	L4Hdr* txHdr = &ps->txMsgHdr;
@@ -216,9 +221,9 @@ bool l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr) {
 }
 
 bool getL4Pkt(L4Pkt* l4Pkt, uint8_t pos, uint8_t prio) {
-	TxOrderType currTxOrder = (l4Pkt->sIdx < MAX_POS)? streams[l4Pkt->sIdx].prio[l4Pkt->psIdx].txOrder: ~0U;
+	TxOrderType currTxOrder = (l4Pkt->sIdx < MAX_POS)? streams[l4Pkt->sIdx][l4Pkt->psIdx].txOrder: ~0U;
 
-	prio_stream_t* ps = &streams[pos].prio[prio];
+	stream_t* ps = &streams[pos][prio];
 	if (ps->head_page != INVALID_PAGE && 
 		ps->txOrder < currTxOrder) { // nothing to send
 		l4Pkt->sIdx = pos;

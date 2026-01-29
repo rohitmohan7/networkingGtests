@@ -23,10 +23,9 @@ extern uint16_t l3RouteTable[MAX_SUBNET]; // gateway table
 
 void l3Init();
 
-uint8_t setL3Hdr(L3Pkt* l3Pkt, uint8_t port);
 // return L2 addr 
 // xferMst pass MST
-bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst);
+bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr);
 
 void l3TxCmplt(L3Pkt* l3pkt);
 

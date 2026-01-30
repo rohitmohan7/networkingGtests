@@ -55,8 +55,7 @@ typedef struct {
 
 typedef struct __attribute__((packed)) {
     L4Hdr hdr;
-    uint16_t sIdx;
-    uint8_t psIdx;
+    uint16_t pos;
 } L4Pkt;
 
 extern TxOrderType txOrder;
@@ -65,21 +64,21 @@ extern TxOrderType txOrder;
 extern stream_t streams[MAX_POS][MAX_PRIORITY];
 
 //bool getL4Pkt(L4Pkt* l4Pkt, uint8_t portSubnet, uint8_t prio, uint16_t* dstAddr);
-bool getL4Pkt(L4Pkt* l4Pkt, uint16_t pos, uint8_t prio);
+bool getL4Pkt(L4Pkt* l4Pkt, uint16_t pos, uint8_t prio, uint8_t pktPrio);
 
 bool l4StrmEmpty(uint16_t pos, uint8_t prio);
 
 bool l4StrmEmptyAftFrme(uint16_t pos, uint8_t prio);
 
-void setL4Hdr(L4Pkt* l4Pkt);
+void setL4Hdr(L4Pkt* l4Pkt, uint8_t prio);
 
 bool l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr);
 
-void l4TxCmplt(L4Pkt* l4Pkt);
+void l4TxCmplt(L4Pkt* l4Pkt, uint8_t prio);
 
-void getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t* len, uint8_t * txHd, uint8_t * txHdOfst, uint8_t txLen);
+void getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t* len, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen, uint8_t prio);
 
-uint8_t getL4PktHd(L4Pkt* l4Pkt, uint8_t* offset);
+uint8_t getL4PktHd(L4Pkt* l4Pkt, uint8_t prio, uint8_t* offset);
 
 bool l4StrmPnding(uint8_t pos, uint8_t prio);
 

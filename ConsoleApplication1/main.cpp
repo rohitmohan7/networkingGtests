@@ -1777,7 +1777,7 @@ void expectTxMultiFrame(MockUart& mock,
     }
 }
 
-TEST_P(MultiHop, pduNoHopSingleFrame) {
+TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
     MockUart mock;
     g_mock = &mock;
     testing::InSequence seq;
@@ -1806,8 +1806,8 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
         }
 
         // send msg
-        appSend(msg.data(), MSG_SIZE, 1, 0, false);
-        appSend(msg2.data(), MSG2_SIZE, 1, 0, false);
+        appSend(msg.data(), MSG_SIZE, 1, 0, 0);
+        appSend(msg2.data(), MSG2_SIZE, 1, 0, 0);
 
         // send MST
         sendMstToken(mock, uart_ptrs[port], l2Addr, port);

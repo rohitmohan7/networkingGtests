@@ -29,8 +29,6 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr);
 
 void l3TxCmplt(L3Pkt* l3pkt);
 
-bool l3Ack(L3Pkt* l3Pkt);
-
 void getL3PktFrag(L3Pkt* l3Pkt, uint8_t** ptr, uint8_t* len, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen);
 
 uint8_t getL3PktHd(L3Pkt* l3Pkt, uint8_t* ofst);

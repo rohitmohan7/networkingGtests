@@ -15,17 +15,14 @@ void l3Init() {
    // setPortAddr();
 }
 
-bool l3Ack(L3Pkt* l3Pkt) {
-	L3Hdr* l3Hdr = &l3Pkt->hdr;
-	return l4Ack(&l3Pkt->l4Pkt, l3Hdr->prio, l3Hdr->dst);
-}
-
 void l3TxCmplt(L3Pkt* l3Pkt) {
-	l4TxCmplt(&l3Pkt->l4Pkt);
+	L3Hdr* l3Hdr = &l3Pkt->hdr;
+	l4TxCmplt(&l3Pkt->l4Pkt, l3Hdr->prio);
 }
 
 uint8_t getL3PktHd(L3Pkt * l3Pkt, uint8_t * ofst) {
-	return getL4PktHd(&l3Pkt->l4Pkt, ofst);
+	L3Hdr* l3Hdr = &l3Pkt->hdr;
+	return getL4PktHd(&l3Pkt->l4Pkt, l3Hdr->prio, ofst);
 }
 
 uint8_t setL3Hdr(L3Pkt * l3Pkt, uint8_t port, uint8_t prio, uint16_t pos) {
@@ -34,7 +31,7 @@ uint8_t setL3Hdr(L3Pkt * l3Pkt, uint8_t port, uint8_t prio, uint16_t pos) {
 	l3Hdr->ttl = 1;
 	l3Hdr->prio = prio;
 	l3Hdr->dst = l3AddrTable[pos];
-	setL4Hdr(&l3Pkt->l4Pkt);
+	setL4Hdr(&l3Pkt->l4Pkt, prio);
 	const uint8_t dstSubnet = (l3Hdr->dst & 0xFF00) >> 8;
 	return l3RouteTable[dstSubnet]; // return l2Addr
 }
@@ -86,11 +83,12 @@ void l3premptLowPrioPending(L3Pkt* l3Pkt, uint16_t* posIdx, uint8_t* prioIdx) {
 	}
 
 	prioIdx++; // txOrder premting would have already selected a pending stream
+	L3Hdr* l3Hdr = &l3Pkt->hdr;
 
 	for (uint8_t prio = prioIdx; prio < MAX_PRIORITY; prio++) {
 		for (int pos = 0; pos < MAX_POS; pos++) {
 			if (l4StrmPnding(pos, prio)) { // prempt with this stream
-				if (getL4Pkt(&l3Pkt->l4Pkt, pos, prio)) {
+				if (getL4Pkt(&l3Pkt->l4Pkt, pos, prio, l3Hdr->prio)) {
 					*posIdx = pos;
 					*prioIdx = prio;
 					return;
@@ -103,6 +101,7 @@ void l3premptLowPrioPending(L3Pkt* l3Pkt, uint16_t* posIdx, uint8_t* prioIdx) {
 bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 	*xferMst = false;
 	const uint8_t portSubnet = ((port_addr[port] & 0xFF00) >> 8);
+	L3Hdr* l3Hdr = &l3Pkt->hdr;
 
 	for (uint8_t prio = 0; prio < MAX_PRIORITY; prio++) {
 		uint16_t dstPos = MAX_POS;
@@ -113,7 +112,7 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 			const uint8_t gatewaySubnet = (l3RouteTable[dstSubnet] & 0xFF00) >> 8;
 			
 			if (gatewaySubnet == portSubnet && 
-					getL4Pkt(&l3Pkt->l4Pkt, pos, prio)) { // prempt by txOrder (Automatically prempts with pending stream)
+					getL4Pkt(&l3Pkt->l4Pkt, pos, prio, l3Hdr->prio)) { // prempt by txOrder (Automatically prempts with pending stream as its txOrder will be lower)
 				if (dstPos != MAX_POS) {
 					txOrderPrempt = true;
 				}
@@ -140,7 +139,7 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 }
 
 void getL3PktFrag(L3Pkt* l3Pkt, uint8_t** ptr, uint8_t* len, uint8_t * txHd, uint8_t* txHdOfst, uint8_t txLen) {
-
+	L3Hdr* l3Hdr = &l3Pkt->hdr;
 	// check here if its a forwarded pkt ?
-	getL4PktFrag(&l3Pkt->l4Pkt, ptr, len, txHd, txHdOfst, txLen);
+	getL4PktFrag(&l3Pkt->l4Pkt, ptr, len, txHd, txHdOfst, txLen, l3Hdr->prio);
 }

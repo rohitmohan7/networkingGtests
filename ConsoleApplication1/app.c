@@ -3,15 +3,11 @@
 #include "layer4.h"
 
 
-bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, bool reqAck)
+bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, uint8_t retry)
 {
     if ((data == NULL) || (len == 0U)) { return false; }
     if ((pos >= (uint16_t)MAX_POS) || (priority >= (uint8_t)MAX_PRIORITY)) { return false; }
 
-#if 0
-    stream_t* sp = &streams[pos];
-    prio_stream_t* s = &sp->prio[priority];
-#endif
     stream_t* s = &streams[pos][priority];
 
     /* --- Deterministic capacity check (optional but recommended) ---
@@ -96,7 +92,7 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, 
         // stream is empty init with msg len
         s->txMsgHdr.msgLen = len;
       //  s->txMsgHdr.msgFlgs = 0;
-        s->txMsgHdr.msgFlgs = (0 & ~L4_MSG_FLAG_TYPE_ACK) | (reqAck ? L4_MSG_FLAG_REQ_ACK : 0);
+        s->txMsgHdr.msgFlgs = (0 & ~L4_MSG_FLAG_TYPE_ACK) | (retry > 0? L4_MSG_FLAG_REQ_ACK : 0);
 
         // set tx Order
         s->txOrder = txOrder;

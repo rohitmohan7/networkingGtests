@@ -1726,7 +1726,7 @@ void expectTxMultiFrame(MockUart& mock,
         expectHdr(mock, UART, hdr);
     }
 
-    size = UNIT - (size + (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG? sizeof(L4Hdr::msgLen) + sizeof(txOrder) : 0));
+    size = UNIT - (size + (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG? sizeof(L4Hdr::msgLen) + sizeof(txOrder) + sizeof(L4Hdr::msgFlgs) : 0));
     uint8_t len = UART_FIFO_SIZE - size - (type != TxMultiFrameType::TX_MULTI_FRAME_CONT ? sizeof(PduHdr): 0);
     bool expectCrcCall = false;
 
@@ -1777,6 +1777,7 @@ void expectTxMultiFrame(MockUart& mock,
     }
 }
 
+//#if 0
 TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
     MockUart mock;
     g_mock = &mock;
@@ -1806,8 +1807,8 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
         }
 
         // send msg
-        appSend(msg.data(), MSG_SIZE, 1, 0, 0);
-        appSend(msg2.data(), MSG2_SIZE, 1, 0, 0);
+        appSend(msg.data(), MSG_SIZE, 1, 0, false);
+        appSend(msg2.data(), MSG2_SIZE, 1, 0, false);
 
         // send MST
         sendMstToken(mock, uart_ptrs[port], l2Addr, port);
@@ -1903,6 +1904,162 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
 
     // send ACK
     netTick(INTER_FRAME_SILENCE + 1);
+}
+//#endif
+
+#if 0
+TEST_P(MultiHop, pduNoHopSingleFrameRetry) {
+    MockUart mock;
+    g_mock = &mock;
+    testing::InSequence seq;
+    // construct message
+    static const int MSG_SIZE = 100;
+    std::array<uint8_t, MSG_SIZE> msg;
+    for (int i = 0; i < MSG_SIZE; i++) {
+        msg[i] = i;
+    }
+
+    static const int MSG2_SIZE = L4_FRAME_SIZE + 1;
+    std::array<uint8_t, MSG2_SIZE> msg2;
+    for (int i = 0; i < MSG2_SIZE; i++) { // send multiframe msg
+        msg2[i] = i;
+    }
+    uint8_t size;
+    PduHdr pduHdr{};
+
+    uint8_t idx[MAX_PORT];
+
+    for (int port = 0; port < MAX_PORT; port++) {
+        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
+        if (l2Addr == 0 /* ||
+               portsTested[port]*/) {
+            continue;
+        }
+
+        // send msg
+        appSend(msg.data(), MSG_SIZE, 1, 0, true);
+        appSend(msg2.data(), MSG2_SIZE, 1, 0, true);
+
+        // send MST
+        sendMstToken(mock, uart_ptrs[port], l2Addr, port);
+
+        // will send message
+
+        // first expect hdr
+        pduHdr = PduHdr{
+            .l2hdr = { 0x1, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST) },
+            .l3hdr = { GetParam().portAddr[port], 0x101, 1, 0 },
+            .l4hdr = { 0, L4_MSG_FLAG_REQ_ACK, 0 }
+        };
+
+        //expectHdr(mock, uart_ptrs[port], pduHdr);
+
+        expectTxMultiFrame(mock,
+            uart_ptrs[port],
+            port,
+            idx[port],
+            size,
+            TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
+            msg.data(),
+            msg.size(),
+            pduHdr);
+
+        // expect CRC call
+    }
+    
+    netTick(INTER_FRAME_SILENCE + 1);
+
+    // check message retry up to limit
+    for (int retry = 0; retry < MAX_L4_RETRY; retry++) {
+        for (int port = 0; port < MAX_PORT; port++) {
+            uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
+            if (l2Addr == 0 /* ||
+                   portsTested[port]*/) {
+                continue;
+            }
+            expectTxMultiFrame(mock,
+                uart_ptrs[port],
+                port,
+                idx[port],
+                size,
+                TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
+                msg.data(),
+                msg.size(),
+                pduHdr);
+        }
+        netTick(L4_RETRY_TIMEOUT+1);
+    }
+
+
+    // TODO Fails
+    // send slave ack
+
+#if 0
+    for (int port = 0; port < MAX_PORT; port++) {
+        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
+        if (l2Addr == 0 /* ||
+               portsTested[port]*/) {
+            continue;
+        }
+
+        // first expect hdr for second msg
+        pduHdr.l4hdr = L4Hdr{ 1, 0, 1 };
+        //expectHdr(mock, uart_ptrs[port], pduHdr);
+
+        // expect msg size single frame
+        expectTxMultiFrame(mock,
+            uart_ptrs[port],
+            port,
+            idx[port],
+            size,
+            TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG,
+            msg2.data(),
+            msg2.size(),
+            pduHdr);
+    }
+
+    netTick(INTER_FRAME_SILENCE + 1);
+
+    // send ISR for next set of Data 
+    for (int port = 0; port < MAX_PORT; port++) {
+        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
+        if (l2Addr == 0 /* ||
+               portsTested[port]*/) {
+            continue;
+        }
+
+        expectTxMultiFrame(mock,
+            uart_ptrs[port],
+            port,
+            idx[port],
+            size,
+            TxMultiFrameType::TX_MULTI_FRAME_CONT,
+            msg2.data(),
+            msg2.size());
+
+        uart_ptrs[port]->S1 |= UART_S1_TDRE_MASK;
+        l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
+
+        // first expect hdr for second msg
+        pduHdr.l2hdr.type |= L2_PKT_TYPE_MST;
+        pduHdr.l4hdr = L4Hdr{ 1, 0, 0 };
+        //expectHdr(mock, uart_ptrs[port], pduHdr);
+
+        // final message
+        expectTxMultiFrame(mock,
+            uart_ptrs[port],
+            port,
+            idx[port],
+            size,
+            TxMultiFrameType::TX_MULTI_FRAME_NEW_FRAME,
+            msg2.data(),
+            msg2.size(),
+            pduHdr);
+    }
+
+    // send ACK
+    netTick(INTER_FRAME_SILENCE + 1);
+#endif
 #if 0
     for (int port = 0; port < MAX_PORT; port++) {
         uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
@@ -1921,7 +2078,7 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
     netTick(INTER_FRAME_SILENCE + 1);
 #endif
 }
-
+#endif
 //TEST_P(MultiHop, l2test) {
 //
 //}

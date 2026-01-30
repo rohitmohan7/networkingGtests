@@ -127,7 +127,7 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 			}
 			else if (prio < LOW_PRIO_IDX) { 
 				// check if end of all prio streams before passing mst
-				*xferMst = txOrderPrempt || passMst(prio, dstPos);
+				*xferMst = !txOrderPrempt && passMst(prio, dstPos);
 			}
 			*l2Addr = setL3Hdr(l3Pkt, port, prio, dstPos);
 			return true;

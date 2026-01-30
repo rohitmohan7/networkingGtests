@@ -1,3 +1,3 @@
 ﻿#include "network.h"
 
-bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, uint8_t retry);
+bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, bool retry);

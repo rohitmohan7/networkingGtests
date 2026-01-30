@@ -26,24 +26,47 @@ void l4Init() {
 			s->tail_used = 0;
 			s->retryCnt = 0;
 			s->retryTmr = 0;
+			s->txFrameCnt = 0;
 		}
 	}
 }
 
 uint8_t getL4PktHd(L4Pkt* l4Pkt, uint8_t prio, uint8_t* offset) {
 	stream_t* s = &streams[l4Pkt->pos][prio];
-	*offset = s->head_off;
+	uint8_t currHd = s->head_page;
+	uint8_t currOfst = s->head_off;
+
+	// advance by frame count
+	uint8_t txBytes = (s->txFrameCnt) * L4_FRAME_SIZE;
+
+	while (txBytes) {
+		uint8_t pgBytes = (UNIT - currOfst);
+
+		uint8_t pgTxBytes = min(txBytes, pgBytes);
+
+		if (txBytes > pgTxBytes) { // advance to next page
+			currHd = g_next[s->head_page];
+			currOfst = 0;
+		} else {
+			// just advance offset
+			currOfst = txBytes;
+		}
+
+		txBytes -= pgTxBytes;
+	}
+
+	*offset = currOfst;
 	s->txMsgHdr.msgFlgs = l4Pkt->hdr.msgLen
 		? (s->txMsgHdr.msgFlgs | L4_MSG_FLAG_STREAM_PENDING)
 		: (s->txMsgHdr.msgFlgs & ~L4_MSG_FLAG_STREAM_PENDING);
-	return s->head_page;
+	return currHd;
 }
 
 void setL4Hdr(L4Pkt* l4Pkt, uint8_t prio) {
 	L4Hdr* l4PktHdr = &l4Pkt->hdr;
 	L4Hdr* txHdr = &streams[l4Pkt->pos][prio].txMsgHdr;
 	l4PktHdr->msgNo = txHdr->msgNo;
-	l4PktHdr->msgFlgs = (txHdr->msgFlgs & ~L4_MSG_FLAG_STREAM_PENDING); // this is an internal flag
+	l4PktHdr->msgFlgs = (txHdr->msgFlgs & ~(L4_MSG_FLAG_STREAM_PENDING | L4_MSG_FLAG_PENDING_ACK)); // unset internal flags
 	l4PktHdr->msgLen = (txHdr->msgLen > L4_FRAME_SIZE) ? (txHdr->msgLen - L4_FRAME_SIZE) : 0; // remaining msg len
 }
 
@@ -138,6 +161,34 @@ void queueMsg(L4Pkt* l4Pkt, stream_t* ps) {
 #endif
 }
 
+void readFromPgs(stream_t* s, uint8_t * val, uint8_t size) {
+	for (int i = 0; i < size; i++) {
+		if (s->head_page == INVALID_PAGE || 
+			(s->head_page == s->tail_page && s->head_off == s->tail_used)) { // TODO deterministic fail
+			memset(val, 0, size);
+			return;
+		}
+
+		uint16_t base = pageOff(s->head_page) + (s->head_off);
+		val[i] = (g_pool[base]) << (8 * i);
+		s->head_off++;
+		if (s->head_off == UNIT) {
+			s->head_page = g_next[s->head_page];
+			s->head_off = 0;
+		}
+	}
+	return true;
+}
+
+void freeStream(stream_t * s) {
+	while (s->head_page != INVALID_PAGE) {
+		uint8_t currPage = s->head_page;
+		s->head_page = g_next[currPage];
+		page_free(currPage);
+	}
+	s->tail_page = s->head_page;
+}
+
 void clearMsgFrame(L4Pkt* l4Pkt, uint8_t prio) {
 	stream_t* s = &streams[l4Pkt->pos][prio];
 	L4Hdr* txHdr = &s->txMsgHdr;
@@ -167,31 +218,17 @@ void clearMsgFrame(L4Pkt* l4Pkt, uint8_t prio) {
 
 		if (hdr->msgLen == 0) {
 			txHdr->msgNo++; // increment seq number
+			readFromPgs(s, (uint8_t*)&txHdr->msgLen, sizeof(txHdr->msgLen));
 
-			for (int i = 0; i < sizeof(txHdr->msgLen); i++) {
-				uint16_t base = pageOff(s->head_page) + (s->head_off);
-				txHdr->msgLen |= (g_pool[base]) << (8 * i);
-				s->head_off++;
-				if (s->head_off == UNIT) {
-					s->head_page = g_next[s->head_page];
-					s->head_off = 0;
-				}
+			if (txHdr->msgLen == 0) { //  no more message pending free stream
+				freeStream(s);
 			}
-
-			if (txHdr->msgLen == 0) { //  no more message pending
-				s->head_page = INVALID_PAGE;
-				s->tail_page = INVALID_PAGE;
-			}
-			else { //  get tx order
-				for (int i = 0; i < sizeof(s->txOrder); i++) {
-					uint16_t base = pageOff(s->head_page) + (s->head_off);
-					s->txOrder |= (g_pool[base]) << (8 * i);
-					s->head_off++;
-					if (s->head_off == UNIT) {
-						s->head_page = g_next[s->head_page];
-						s->head_off = 0;
-					}
-				}
+			else {
+				readFromPgs(s, (uint8_t*)&s->txOrder, sizeof(TxOrderType));
+				readFromPgs(s, (uint8_t*)&s->txMsgHdr.msgFlgs, sizeof(s->txMsgHdr.msgFlgs));
+				s->txFrameCnt = 0;
+				s->retryTmr = 0;
+				s->retryCnt = 0;
 			}
 		}
 		else {
@@ -200,16 +237,31 @@ void clearMsgFrame(L4Pkt* l4Pkt, uint8_t prio) {
 	}
 }
 
+bool l4lstMsgFrm(uint16_t pos, uint8_t prio) {
+	stream_t* ps = &streams[pos][prio];
+	return (ps->txMsgHdr.msgLen - (ps->txFrameCnt * L4_FRAME_SIZE)) < L4_FRAME_SIZE;
+}
+
 void l4TxCmplt(L4Pkt* l4Pkt, uint8_t prio) {
 	 if (!(l4Pkt->hdr.msgFlgs & L4_MSG_FLAG_REQ_ACK)) { // this msg does not require an ack, frame can be cleared from page buffer
 		 clearMsgFrame(l4Pkt, prio);
-	 } else { // start the timers
-
+	 } else {
+		 stream_t* s = &streams[l4Pkt->pos][prio];
+		 s->txFrameCnt++;
+		 if (l4lstMsgFrm(l4Pkt->pos, prio)) {
+			 s->txMsgHdr.msgFlgs |= L4_MSG_FLAG_PENDING_ACK;
+		 }
 	 }
 }
 
 bool l4StrmEmptyAftFrme(uint16_t pos, uint8_t prio) {
 	stream_t* s = &streams[pos][prio];
+
+	if ((s->txMsgHdr.msgFlgs & L4_MSG_FLAG_REQ_ACK) && l4lstMsgFrm(pos, prio)) {
+		// after last frame this stream will wait for ack before moving to next message, consider empty after frame...
+		return true;
+	}
+
 	// check size remaining in page buff
 	const uint16_t base = pageOff(s->head_page) + (uint16_t)(s->head_off);
 	const uint16_t end = pageOff(s->tail_page) + (uint16_t)(s->tail_used);
@@ -233,22 +285,40 @@ bool l4StrmPnding(uint8_t pos, uint8_t prio) {
 	return false;
 }
 
-bool l4lstMsgFrm(uint16_t pos, uint8_t prio) {
-	stream_t* ps = &streams[pos][prio];
-	return ps->txMsgHdr.msgLen < L4_FRAME_SIZE;
-}
-
 bool getL4Pkt(L4Pkt* l4Pkt, uint16_t pos, uint8_t prio, uint8_t pktPrio) {
 	TxOrderType currTxOrder = (l4Pkt->pos < MAX_POS) ? streams[l4Pkt->pos][pktPrio].txOrder : ~0U;
 
 	stream_t* ps = &streams[pos][prio];
 	if (ps->head_page != INVALID_PAGE &&
-		ps->txOrder <= currTxOrder) { // nothing to send
+		ps->txOrder <= currTxOrder &&
+		!(ps->txMsgHdr.msgFlgs & L4_MSG_FLAG_PENDING_ACK)) { // nothing to send
 		l4Pkt->pos = pos;
 		return true;
 	}
 
 	return false;
+}
+
+void l4Tick(uint8_t ms) {
+	for (uint16_t pos = 0; pos < MAX_POS; pos++) {
+		for (uint8_t prio = 0; prio < MAX_PRIORITY; prio++) {
+			stream_t* s = &streams[pos][prio];
+			if ((s->txMsgHdr.msgFlgs & L4_MSG_FLAG_PENDING_ACK)) {
+				s->retryTmr = (((uint16_t)s->retryTmr) + (uint16_t)ms) > 0xFF ? 0xFF : s->retryTmr + ms;
+
+				if (s->retryTmr > L4_RETRY_TIMEOUT) {
+					if (s->retryCnt >= MAX_L4_RETRY) {
+						// drop move and move to next msg
+					}
+					else {
+						s->retryCnt++;
+						s->txMsgHdr.msgFlgs &= ~L4_MSG_FLAG_PENDING_ACK;
+						s->retryTmr = 0;
+					}
+				}
+			}
+		}
+	}
 }
 
 // directly enqueue next prio msg in ACK

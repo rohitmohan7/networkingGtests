@@ -3,77 +3,57 @@
 #include "layer4.h"
 
 
-bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, uint8_t retry)
+void writeValToPage(stream_t* s, uint8_t* val, uint8_t len) {
+    for (int size = 0; size < len; size++)
+    {
+        if (s->tail_used == UNIT) {
+            uint8_t p = page_alloc();
+            g_next[s->tail_page] = p;
+            s->tail_page = page_alloc();
+            g_pool[pageOff(s->tail_page)] = val[size];
+            s->tail_used = 1U;
+        }
+        else {
+            const uint32_t base = pageOff(s->tail_page) + (uint32_t)s->tail_used;
+            g_pool[base] = val[size];
+            s->tail_used++;
+        }
+    }
+    return true;
+}
+
+
+bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, bool retry)
 {
     if ((data == NULL) || (len == 0U)) { return false; }
     if ((pos >= (uint16_t)MAX_POS) || (priority >= (uint8_t)MAX_PRIORITY)) { return false; }
 
     stream_t* s = &streams[pos][priority];
 
-    /* --- Deterministic capacity check (optional but recommended) ---
+    /* --- Deterministic capacity check ---
      * Worst-case extra pages needed if tail has some free space:
      * bytes can fit into tail slack first, then pages.
      */
     uint8_t tail_free = 0U;
     if (s->tail_page != INVALID_PAGE)
     {
-        for (int size = 0; size < sizeof(len); size++)
-        {
-            if (s->tail_used == UNIT) {
-                uint8_t p = page_alloc();
-                if (p == INVALID_PAGE)
-                {
-                    /* We already checked capacity, so this should not happen,
-                       but if it does, return false deterministically without corrupting chain.
-                       (No rollback needed because nothing allocated in this iteration if fail here.) */
-                    return false;
-                }
-                g_next[s->tail_page] = p;
-                s->tail_page = page_alloc();
-                g_pool[pageOff(s->tail_page)] = (uint8_t)((len >> (size * 8)) & 0xFFu);
-                s->tail_used = 1U;
-            }
-            else {
-                const uint32_t base = pageOff(s->tail_page) + (uint32_t)s->tail_used;
-                g_pool[base] = (uint8_t)((len >> (size * 8)) & 0xFFu);
-                s->tail_used++;
-            }
-        }
-//#if 0
-        // set Tx Order
-        for (int size = 0; size < sizeof(txOrder); size++)
-        {
-            if (s->tail_used == UNIT) {
-                uint8_t p = page_alloc();
-                if (p == INVALID_PAGE)
-                {
-                    /* We already checked capacity, so this should not happen,
-                       but if it does, return false deterministically without corrupting chain.
-                       (No rollback needed because nothing allocated in this iteration if fail here.) */
-                    return false;
-                }
-                g_next[s->tail_page] = p;
-                s->tail_page = page_alloc();
-                g_pool[pageOff(s->tail_page)] = (uint8_t)((txOrder >> (size * 8)) & 0xFFu);
-                s->tail_used = 1U;
-            }
-            else {
-                const uint32_t base = pageOff(s->tail_page) + (uint32_t)s->tail_used;
-                g_pool[base] = (uint8_t)((txOrder >> (size * 8)) & 0xFFu);
-                s->tail_used++;
-            }
-        }
-//#endif
-
         tail_free = UNIT - s->tail_used;  /* 0..UNIT */
     }
-
-    const uint8_t bytes_after_tail = (len > tail_free) ? (uint16_t)(len - tail_free) : 0U;
+    uint16_t reqLen = len + ((s->tail_page != INVALID_PAGE) ? (sizeof(len) + sizeof(txOrder)): 0);
+    const uint8_t bytes_after_tail = (len > tail_free) ? (uint16_t)((reqLen) - tail_free) : 0U;
     const uint8_t need_pages = (bytes_after_tail == 0U) ? 0U : ceilPages(bytes_after_tail);
 
     if (g_free_count < need_pages)
     {
         return false; /* deterministic fail */
+    }
+
+    uint8_t msgFlgs = (0 & ~L4_MSG_FLAG_TYPE_ACK) | (retry > 0 ? L4_MSG_FLAG_REQ_ACK : 0);
+
+    if (s->tail_page != INVALID_PAGE) { // stream is corrupted here ? should free everything ? TODO
+        writeValToPage(s, (uint8_t*)&len, sizeof(len));
+        writeValToPage(s, (uint8_t*)&txOrder, sizeof(txOrder));
+        writeValToPage(s, (uint8_t*)&msgFlgs, sizeof(msgFlgs));
     }
 
     /* --- Append bytes into stream --- */
@@ -83,7 +63,6 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, 
     if (s->tail_page == INVALID_PAGE)
     {
         uint8_t p = page_alloc();
-        if (p == INVALID_PAGE) { return false; } /* should not happen after check */
         s->head_page = p;
         s->tail_page = p;
         // s->head_off = 0U;
@@ -91,9 +70,9 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, 
 
         // stream is empty init with msg len
         s->txMsgHdr.msgLen = len;
-      //  s->txMsgHdr.msgFlgs = 0;
-        s->txMsgHdr.msgFlgs = (0 & ~L4_MSG_FLAG_TYPE_ACK) | (retry > 0? L4_MSG_FLAG_REQ_ACK : 0);
-
+        s->txMsgHdr.msgFlgs = msgFlgs;
+        s->retryCnt =
+        s->retryTmr = 0;
         // set tx Order
         s->txOrder = txOrder;
     }
@@ -104,13 +83,6 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, 
         if ((uint16_t)s->tail_used >= (uint16_t)UNIT)
         {
             uint8_t p = page_alloc();
-            if (p == INVALID_PAGE)
-            {
-                /* We already checked capacity, so this should not happen,
-                   but if it does, return false deterministically without corrupting chain.
-                   (No rollback needed because nothing allocated in this iteration if fail here.) */
-                return false;
-            }
             g_next[s->tail_page] = p;
             s->tail_page = p;
             s->tail_used = 0U;
@@ -133,16 +105,6 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, 
         //   s->queued_bytes = (uint16_t)(s->queued_bytes + take);
         in = (uint16_t)(in + take);
     }
-
-    
-    for (int i = 0; i < sizeof(MsgLenType); i++) { // zero out msg len for next message in page
-        if (s->tail_used == UNIT) { 
-            break;
-        }
-        const uint32_t base = pageOff(s->tail_page) + (uint32_t)s->tail_used;
-        g_pool[base + (uint32_t)i] = 0;
-    }
-
     txOrder++;
     return true;
 }

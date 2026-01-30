@@ -7,6 +7,10 @@
 #define L4_MSG_FLAG_TYPE_ACK 0x1
 #define L4_MSG_FLAG_REQ_ACK 0x2
 #define L4_MSG_FLAG_STREAM_PENDING 0x4
+#define L4_MSG_FLAG_PENDING_ACK 0x8
+
+#define MAX_L4_RETRY 3
+#define L4_RETRY_TIMEOUT 200
 
 typedef uint16_t TxOrderType;
 typedef uint16_t MsgLenType;
@@ -51,6 +55,7 @@ typedef struct {
 
     uint8_t retryCnt;
     uint8_t retryTmr;
+    uint8_t txFrameCnt;
 } stream_t;
 
 typedef struct __attribute__((packed)) {
@@ -85,4 +90,6 @@ bool l4StrmPnding(uint8_t pos, uint8_t prio);
 bool l4lstMsgFrm(uint16_t pos, uint8_t prio);
 
 void l4Init();
+
+void l4Tick(uint8_t ms);
 #endif

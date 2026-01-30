@@ -1,37 +1,101 @@
 ﻿#include "network.h"
 #include "layer2.h"
+#include "pit.h"
 
-bool mst_token[MAX_PORT];
-uint16_t l2TmLstRx[MAX_PORT];
+static volatile bool mst_token[MAX_PORT];
+//uint32_t l2TmLstRx[MAX_PORT];
 L2TxPktDesc l2TxPktDesc[MAX_PORT];
 L2RxPktDesc l2RxPktDesc[MAX_PORT];
 uint8_t maxL2Addr[MAX_PORT];
 static bool txActive[MAX_PORT];
 
-#define L2_RETRY_THRESHOLD 3
+#define L2_PIT_TIMER_START_IDX 1
+#define BUS_CLK_HZ 48000
+
+/*! Macro to convert a microsecond period to raw count value */
+#define USEC_TO_COUNT(us, clockFreqInHz) (uint64_t)(((uint64_t)(us) * (clockFreqInHz)) / 1000000U)
+
+uint8_t getNxtMst(uint8_t port, uint8_t addr) {
+	uint8_t max = maxL2Addr[port];     // valid range: 1..max
+	uint8_t r = port_addr[port];
+
+	uint8_t next = (uint8_t)(addr + 1u);
+	if (next == 0u || next > max) next = 1u;   // wrap, and also handles uint8_t overflow
+
+	if (next == r) {                            // skip reserved
+		next++;
+		if (next == 0u || next > max) next = 1u;
+	}
+	return next;
+}
+
+static inline void l2StartTx(uint8_t port) {
+#if 0
+	l2TmLstRx[port] = 0;
+	txActive[port] = true;
+#endif
+	
+	l1StartTx(port);
+}
+
+void l2SendMst(uint8_t port, uint8_t addr) {
+	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
+	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_MST;
+	l2TxPktDesc[port].l2TxPkt.msg.mst.nextMst = getNxtMst(port, addr); // so we can select next MST
+	l2TxPktDesc[port].l2TxPkt.crc = 0xFF; //TODO
+	l2StartTx(port);
+}
+
+void l2SendMsg(uint8_t port) {
+	bool passMST;
+	uint8_t l2Addr;
+	if (getl3Pkt(port, &l2TxPktDesc[port].l2TxPkt.msg.pdu, &passMST, &l2Addr)) {
+		l2SendPdu(port, passMST, l2Addr);
+	}
+	else {
+		l2SendMst(port, getNxtMst(port, port_addr[port]));
+	}
+}
+
+void mstTmOut(uint8_t pitChnl) {
+	uint8_t port = pitChnl - L2_PIT_TIMER_START_IDX;
+	mst_token[port] = true;
+	l2SendMsg(port);
+}
+
+void mstPassTmOut(uint8_t pitChnl) {
+}
 
 void l2Init() {
 	memset(mst_token, 0, sizeof mst_token);
-	memset(l2TmLstRx, 0, sizeof l2TmLstRx);
+	//memset(l2TmLstRx, 0, sizeof l2TmLstRx);
 	memset(l2TxPktDesc, 0xFF, sizeof l2TxPktDesc);
 	memset(maxL2Addr, 0xFF, sizeof maxL2Addr);
 	memset(l2RxPktDesc, 0xFF, sizeof l2RxPktDesc);
 	memset(txActive, 0x0, sizeof txActive);
 	for (int port = 0; port < MAX_PORT; port++) {
 		l2RxPktDesc[port].abort = false;
+		uint32_t silentTimer = (((uint8_t)port_addr[port]) * LINE_SILENT);
+		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(silentTimer, BUS_CLK_HZ), &mstTmOut);
 	}
 }
 
 void l2TxCmplt(uint8_t port) {
-	txActive[port] = false;
+	//txActive[port] = false;
 	l3TxCmplt(&l2TxPktDesc[port].l2TxPkt.msg.pdu);
 	// prime for next msg
-	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
+	//l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
+	if (l2TxPktDesc[port].l2TxPkt.hdr.type & L2_PKT_TYPE_MST) {
+		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((LINE_SILENT / 2), BUS_CLK_HZ), &mstPassTmOut);
+	}
+	else {
+
+	}
 }
 
 void l2AbortTx(uint8_t port) {
 	mst_token[port] = false;
-	txActive[port] = false;
+	//txActive[port] = false;
 }
 
 /*void l2Send(L2Packet) {
@@ -144,26 +208,75 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 	return false;
 }
 
+void l2CmtRx(port) {
+	l1RxCmplt(port);
+
+	if (l2RxPktDesc[port].abort) {
+		l2RxPktDesc[port].abort = false;
+		return;
+	}
+
+	uint8_t rxType = l2RxPktDesc[port].l2RxPkt.hdr.type;
+	l2RxPktDesc[port].l2RxPkt.hdr.type = L2_PKT_TYPE_INVALID; // invalidate msg for future
+
+	if (rxType == L2_PKT_TYPE_INVALID) {
+		return;
+	}
+
+	bool crcValid = l2RxPktDesc[port].l2RxPkt.crc == 0xFF;
+	// validate CRC TODO
+	if (!crcValid) { // silently drop
+		return;
+	}
+
+	switch (rxType) {
+	case L2_PKT_TYPE_MST:
+		mst_token[port] = true;
+		break;
+	default:
+		break;
+	}
+}
+
+void interFrmeSlnce(uint8_t pitChnl) {
+	uint8_t port = pitChnl - L2_PIT_TIMER_START_IDX;
+	l2CmtRx(port);
+}
+
+void interChrSlnce(uint8_t pitChnl) {
+	uint8_t port = pitChnl - L2_PIT_TIMER_START_IDX;
+	l2RxPktDesc[port].abort = true;
+	PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((INTER_FRAME_SILENCE - INTER_CHAR_SILENCE), BUS_CLK_HZ), &interFrmeSlnce);
+}
+
+bool l2AbortRead(uint8_t port) {
+#if 0
+	uint32_t timeSnceLstRx = pitGetCurrMS() - l2TmLstRx[port];
+	// update rx time
+	l2TmLstRx[port] = pitGetCurrMS();
+
+	if (timeSnceLstRx > INTER_CHAR_SILENCE /* &&
+		timeSnceLstRx < INTER_FRAME_SILENCE*/) { // check if we need to check frame silence ?
+		l2RxPktDesc[port].abort = true;
+	}
+#endif
+
+	if (l2RxPktDesc[port].abort) { // if aborted wait for next message
+		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(INTER_FRAME_SILENCE, BUS_CLK_HZ), &interFrmeSlnce);
+	} else {
+		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(INTER_CHAR_SILENCE, BUS_CLK_HZ), &interChrSlnce);
+	}
+	return l2RxPktDesc[port].abort;
+}
 
 uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 	uint8_t len = 0;
-	/* */
-	if ((l2TmLstRx[port] > INTER_CHAR_SILENCE) && 
-		(l2TmLstRx[port] < INTER_FRAME_SILENCE)) { // abort Rx Todo
-		l2RxPktDesc[port].abort = true;
-	}
-
-	l2TmLstRx[port] = 0;
-
-	if (l2RxPktDesc[port].abort) {
-		return len;
-	}
 
 	// validate message early
 	if (mst_token[port]) { // there should be no active RX when mst
 		l2AbortTx(port);
 		l2RxPktDesc[port].abort = true;
-
+		return len;
 		// maybe some special message needs response from slave?
 	}
 	else {
@@ -202,33 +315,9 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 	//return len;
 }
 
-uint8_t getNxtMst(uint8_t port, uint8_t addr) {
-	uint8_t max = maxL2Addr[port];     // valid range: 1..max
-	uint8_t r = port_addr[port];
 
-	uint8_t next = (uint8_t)(addr + 1u);
-	if (next == 0u || next > max) next = 1u;   // wrap, and also handles uint8_t overflow
 
-	if (next == r) {                            // skip reserved
-		next++;
-		if (next == 0u || next > max) next = 1u;
-	}
-	return next;
-}
 
-static inline void l2StartTx(uint8_t port) {
-	l2TmLstRx[port] = 0.0;
-	txActive[port] = true;
-	l1StartTx(port);
-}
-
-void l2SendMst(uint8_t port, uint8_t addr) {
-	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
-	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_MST;
-	l2TxPktDesc[port].l2TxPkt.msg.mst.nextMst = getNxtMst(port, addr); // so we can select next MST
-	l2TxPktDesc[port].l2TxPkt.crc = 0xFF; //TODO
-	l2StartTx(port);
-}
 
 
 void l2SendPdu(uint8_t port, bool mstPass, uint8_t addr) {
@@ -238,42 +327,16 @@ void l2SendPdu(uint8_t port, bool mstPass, uint8_t addr) {
 	l2StartTx(port);
 }
 
-void l2CmtRx(port) {
-	l1RxCmplt(port);
 
-	if (l2RxPktDesc[port].abort) {
-		l2RxPktDesc[port].abort = false;
-		return;
-	}
 
-	uint8_t rxType = l2RxPktDesc[port].l2RxPkt.hdr.type;
-	l2RxPktDesc[port].l2RxPkt.hdr.type = L2_PKT_TYPE_INVALID; // invalidate msg for future
-
-	if (rxType == L2_PKT_TYPE_INVALID) {
-		return;
-	}
-
-	bool crcValid = l2RxPktDesc[port].l2RxPkt.crc == 0xFF;
-	// validate CRC TODO
-	if (!crcValid) { // silently drop
-		return;
-	}
-
-	switch (rxType) {
-	case L2_PKT_TYPE_MST:
-		mst_token[port] = true;
-		break;
-	default:
-		break;
-	}
-}
-
-void l2Tick(uint8_t ms) { // ms is milliseconds since last tick 
+#if 0
+void l2Tick() { // ms is milliseconds since last tick 
 	for (int port = 0; port < MAX_PORT; port++) {
 		if (maxL2Addr[port] <= 1) { // only single device in port consider dead
 			continue;
 		}
-		
+
+#if 0
 		// increment rx timer
 		if (txActive[port]) {
 			l2TmLstRx[port] = 0;
@@ -281,6 +344,7 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 		else {
 			l2TmLstRx[port] += ms;
 		}
+#endif
 
 		if (l2TmLstRx[port] > (((uint8_t)port_addr[port]) * LINE_SILENT)) {
 			mst_token[port] = true;
@@ -315,7 +379,7 @@ void l2Tick(uint8_t ms) { // ms is milliseconds since last tick
 		}
 	}
 }
-
+#endif
 #if 0
 void l2Send(L3Packet packet, uint8_t addr) {
 

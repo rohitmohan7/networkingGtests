@@ -27,7 +27,7 @@ static inline L2TxPktDesc* L2_GetPktDesc(uint8_t port)
 #define L2_NAK_RSN_INV_TYPE 2
 #define L2_NAK_RSN_CHR_TMEOUT 3
 
-#define LINE_SILENT 100
+#define LINE_SILENT 100000
 #define INTER_FRAME_SILENCE 2 // 3.5 char times for baud less than 19200, else fixed 1.750 ms
 #define INTER_CHAR_SILENCE 1 // 1.5 char times for baud less than 19200, else fixed 750 µs
 
@@ -95,7 +95,7 @@ extern L2TxPktDesc l2TxPktDesc[MAX_PORT];
 
 void l2Init();
 
-void l2Tick(uint8_t ms); // ms is milliseconds since last tick
+void l2Tick(); // ms is milliseconds since last tick
 
 bool l2GetTxPkt(uint8_t port, uint8_t** ptr, uint8_t* len, uint16_t idx, uint8_t txFifoLen, uint8_t xfer);
 
@@ -104,5 +104,7 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx);
 void l2TxCmplt(uint8_t port);
 
 void l2AbortTx(uint8_t port);
+
+bool l2AbortRead(port);
 #endif // ! L2_NETWORK
 

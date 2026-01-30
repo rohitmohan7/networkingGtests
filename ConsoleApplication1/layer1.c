@@ -88,9 +88,7 @@ static void l1UARTReadNonBlocking(UART_Type* UARTptr, uint8_t* data, size_t leng
 		data[i] = UARTptr->D;
 	}
 }
-
 #endif
-
 
 static void l1UARTAbortRead(UART_Type* UARTptr)
 {
@@ -126,8 +124,6 @@ void l1Rx(UART_Type* UARTptr, uint8_t port) {
 
 	}
 }
-
-
 
 void l1Tx(UART_Type* UARTptr, uint8_t port) {
 	uint8_t  txLen = UART_FIFO_SIZE - UARTptr->TCFIFO;
@@ -194,9 +190,15 @@ void l1TransferHandleIRQ(UART_Type* UARTptr, uint8_t port) {
 			else { // proc rx
 				// validate up to tx index first 
 				if (rxIndex[port] < txIndex[port]) {
-					validateTxEcho(UARTptr, port, (txIndex[port] - rxIndex[port]));
+					validateTxEcho(UARTptr, port, (txIndex[port] - rxIndex[port])); // todo abort Rx on failuire ?
 				}
-				l1Rx(UARTptr, port);
+
+				if (l2AbortRead(port)) {
+					l1UARTAbortRead(UARTptr);
+				}
+				else {
+					l1Rx(UARTptr, port);
+				}
 			}
 		} else {
 			validateTxEcho(UARTptr, port, count);

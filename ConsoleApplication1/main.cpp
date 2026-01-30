@@ -1836,7 +1836,9 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
 
         // expect CRC call
     }
-    netTick(INTER_FRAME_SILENCE + 1);
+    
+    milliSeconds += INTER_FRAME_SILENCE + 1;
+    netTick();
     // TODO Fails
     // send slave ack
 
@@ -1863,7 +1865,8 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
                            pduHdr);
     }
 
-    netTick(INTER_FRAME_SILENCE + 1);
+    milliSeconds += INTER_FRAME_SILENCE + 1;
+    netTick();
 
     // send ISR for next set of Data 
     for (int port = 0; port < MAX_PORT; port++) {
@@ -1903,7 +1906,8 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
     }
 
     // send ACK
-    netTick(INTER_FRAME_SILENCE + 1);
+    milliSeconds += INTER_FRAME_SILENCE + 1;
+    netTick();
 }
 //#endif
 

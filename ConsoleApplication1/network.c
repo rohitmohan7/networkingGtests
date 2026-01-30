@@ -53,14 +53,14 @@ void setPortAddr() {
 
 void netInit(UART_Type* UART[MAX_PORT]) {
     pages_init();
+    setPortAddr();
     l1Init(UART);
 	l2Init();
 	l3Init();
     l4Init();
-    setPortAddr();
 }
 
-void netTick(uint8_t ms) {
+void netTick() {
 #if 0
 	for (int port = 0; port < MAX_PORT; port) {
 		if (mst_token[port]) {
@@ -69,6 +69,6 @@ void netTick(uint8_t ms) {
 		}
 	}
 #endif
-	l2Tick(ms);
+	l2Tick();
    // l4Tick(ms);
 }

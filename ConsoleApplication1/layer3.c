@@ -49,12 +49,17 @@ bool passMst(uint8_t prioIdx, uint16_t posIdx) {
 		return false;
 	}
 
+	if (prioIdx >= LOW_PRIO_IDX && l4lstMsgFrm(posIdx, prioIdx)) {
+		// if this the last frame of a low priority message pass the MST token
+		return true;
+	}
+
 	if (posIdx + 1 >= MAX_POS) {
 		posIdx = 0;
-		prioIdx++; // check next priority
+		prioIdx++; // check from next priority
 	}
 	else {
-		posIdx++;
+		posIdx++; // check from next pos 
 	}
 
 	uint16_t pos = posIdx;
@@ -74,8 +79,25 @@ bool passMst(uint8_t prioIdx, uint16_t posIdx) {
 	return true;
 }
 
-void l3premptLowPrioPending(L3Pkt* l3Pkt, uint16_t* pos, uint8_t* prio) {
+void l3premptLowPrioPending(L3Pkt* l3Pkt, uint16_t* posIdx, uint8_t* prioIdx) {
 
+	if (l4StrmPnding(*posIdx, *prioIdx)) { // aready current stream is pending
+		return;
+	}
+
+	prioIdx++; // txOrder premting would have already selected a pending stream
+
+	for (uint8_t prio = prioIdx; prio < MAX_PRIORITY; prio++) {
+		for (int pos = 0; pos < MAX_POS; pos++) {
+			if (l4StrmPnding(pos, prio)) { // prempt with this stream
+				if (getL4Pkt(&l3Pkt->l4Pkt, pos, prio)) {
+					*posIdx = pos;
+					*prioIdx = prio;
+					return;
+				} // this is an error condition should not get here
+			}
+		}
+	}
 }
 
 bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
@@ -91,7 +113,7 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 			const uint8_t gatewaySubnet = (l3RouteTable[dstSubnet] & 0xFF00) >> 8;
 			
 			if (gatewaySubnet == portSubnet && 
-					getL4Pkt(&l3Pkt->l4Pkt, pos, prio)) { // prempt by txOrder and pending
+					getL4Pkt(&l3Pkt->l4Pkt, pos, prio)) { // prempt by txOrder (Automatically prempts with pending stream)
 				if (dstPos != MAX_POS) {
 					txOrderPrempt = true;
 				}
@@ -101,7 +123,7 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 
 		if (dstPos != MAX_POS) { // send highest priority in tx order
 			if (prio >= LOW_PRIO_IDX) {
-				//l3premptLowPrioPending(&l3Pkt->l4Pkt, &dstPos, &prio);
+				l3premptLowPrioPending(&l3Pkt->l4Pkt, &dstPos, &prio);
 				*xferMst = passMst(prio, dstPos);
 			}
 			else if (prio < LOW_PRIO_IDX) { 

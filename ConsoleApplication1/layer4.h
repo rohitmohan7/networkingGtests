@@ -83,5 +83,7 @@ uint8_t getL4PktHd(L4Pkt* l4Pkt, uint8_t* offset);
 
 bool l4StrmPnding(uint8_t pos, uint8_t prio);
 
+bool l4lstMsgFrm(uint16_t pos, uint8_t prio);
+
 void l4Init();
 #endif

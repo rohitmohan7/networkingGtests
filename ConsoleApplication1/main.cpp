@@ -1886,7 +1886,7 @@ TEST_P(MultiHop, pduNoHopSingleFrame) {
 
         // first expect hdr for second msg
         pduHdr.l2hdr.type |= L2_PKT_TYPE_MST;
-        pduHdr.l4hdr = L4Hdr{ 1, 0 };
+        pduHdr.l4hdr = L4Hdr{ 1, 0, 0 };
         //expectHdr(mock, uart_ptrs[port], pduHdr);
 
         // final message

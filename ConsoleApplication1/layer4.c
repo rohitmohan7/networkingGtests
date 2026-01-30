@@ -37,19 +37,18 @@ void l4Init() {
 uint8_t getL4PktHd(L4Pkt* l4Pkt, uint8_t* offset) {
 	stream_t* s = &streams[l4Pkt->sIdx][l4Pkt->psIdx];
 	*offset = s->head_off;
+	s->txMsgHdr.msgFlgs = l4Pkt->hdr.msgLen
+		? (s->txMsgHdr.msgFlgs | L4_MSG_FLAG_STREAM_PENDING)
+		: (s->txMsgHdr.msgFlgs & ~L4_MSG_FLAG_STREAM_PENDING);
 	return s->head_page;
 }
 
 void setL4Hdr(L4Pkt* l4Pkt) {
 	L4Hdr* l4PktHdr = &l4Pkt->hdr;
 	L4Hdr* txHdr = &streams[l4Pkt->sIdx][l4Pkt->psIdx].txMsgHdr;
-	memcpy(l4PktHdr, txHdr, (sizeof(L4Hdr) - sizeof(MsgLenType)));
+	l4PktHdr->msgNo = txHdr->msgNo;
+	l4PktHdr->msgFlgs = (txHdr->msgFlgs & ~L4_MSG_FLAG_STREAM_PENDING); // this is an internal flag
 	l4PktHdr->msgLen = (txHdr->msgLen > L4_FRAME_SIZE) ? (txHdr->msgLen - L4_FRAME_SIZE) : 0; // remaining msg len
-	if (l4PktHdr->msgLen) {
-		txHdr->msgFlgs |= L4_MSG_FLAG_STREAM_PENDING;
-	} else {
-		txHdr->msgFlgs &= ~L4_MSG_FLAG_STREAM_PENDING;
-	}
 }
 
 void getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t* len, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen) {
@@ -310,6 +309,11 @@ bool l4StrmPnding(uint8_t pos, uint8_t prio) {
 		return true;
 	}
 	return false;
+}
+
+bool l4lstMsgFrm(uint16_t pos, uint8_t prio) {
+	stream_t* ps = &streams[pos][prio];
+	return ps->txMsgHdr.msgLen < L4_FRAME_SIZE;
 }
 
 bool getL4Pkt(L4Pkt* l4Pkt, uint16_t pos, uint8_t prio) {

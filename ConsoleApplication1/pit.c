@@ -18,14 +18,14 @@ bool pitTimespanExceeded(uint32_t startTime, uint32_t endTime, uint32_t duration
 	return ((endTime - startTime) > duration);
 }
 
-void PITCallback(uint8_t channel) // single shot
+void PITCallback(uint8_t channel)  // single shot
 {
-    //Call the callback if set
-    if (mp_PITTimerCallback[channel] != NULL)
-    {
-        mp_PITTimerCallback[channel](channel);
-    }
+    void (*cb)(uint8_t) = mp_PITTimerCallback[channel];
     mp_PITTimerCallback[channel] = NULL;
+
+    if (cb != NULL) {
+        cb(channel);
+    }
 }
 
 bool PITDisableTimer(int32_t timerNum)

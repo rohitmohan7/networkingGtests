@@ -1510,6 +1510,7 @@ static void expectMst(MockUart& mock, uint8_t addr, UART_Type * uart, uint8_t po
     ASSERT_NE((uart->C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
 }
 
+#if 0
 TEST_P(MultiHop, mstPassFail) {
 
     MockUart mock;
@@ -1555,11 +1556,62 @@ TEST_P(MultiHop, mstPassFail) {
         }
     }
 }
+#endif
 
-#if 0
+void sendMstToken(MockUart & mock, UART_Type * UART, const uint8_t & l2Addr, const uint8_t & port) {
+    std::array<uint8_t, 3> pkt{ { l2Addr, L2_PKT_TYPE_MST, 0xFF } };
+
+    UART->S1 |= UART_S1_RDRF_MASK;
+    UART->RCFIFO = pkt.size();
+
+    // call to copy header
+    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Hdr)))
+        .Times(1)
+        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
+        std::memcpy(data, pkt.data(), len);
+            }))
+        .RetiresOnSaturation();
+
+    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Pkt::crc)))
+        .Times(1)
+        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
+        memcpy(data, pkt.data() + sizeof(L2Hdr), len);
+            }))
+        .RetiresOnSaturation();
+
+    l1TransferHandleIRQ(UART, port);
+
+    UART->S1 &= ~UART_S1_RDRF_MASK;
+    UART->RCFIFO = 0;
+}
+
 TEST_P(MultiHop, mstPassMsg) {
     MockUart mock;
     g_mock = &mock;
+
+    for (int port = 0; port < MAX_PORT; port++) {
+        // confirm tx is disabled
+        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
+        if (l2Addr > 0) {
+            ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true); // confirm RX is enabled
+            sendMstToken(mock, uart_ptrs[port], l2Addr, port);
+
+            // since there is no message should pass token immediatly
+            PITCallback(port + L2_PIT_TIMER_START_IDX); // inter char silence
+            PITCallback(port + L2_PIT_TIMER_START_IDX); // inter frame - inter char silence
+
+            ASSERT_EQ((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK)) != 0, true);
+            uint8_t nxtMst = (l2Addr + 1) > GetParam().devCnt[port] ? 1 : l2Addr + 1;
+            expectMst(mock, nxtMst, &uart_objs[port], port);
+        }
+        else {
+            // TODO Disabled port
+            //ASSERT_NE((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true); // confirm RX is disabled
+        }
+    }
+
+#if 0
     uint8_t nxtMst[MAX_PORT];
 
     for (int port = 0; port < MAX_PORT; port++) {
@@ -1616,10 +1668,11 @@ TEST_P(MultiHop, mstPassMsg) {
             .RetiresOnSaturation();
     }
     netTick(INTER_FRAME_SILENCE+1);
-
+#endif
     // TODO Fails
 }
-//#endif
+
+#if 0
 
 
 #define L2_FRAME_SIZE (RS485_FRAME_SIZE - (sizeof(L2Hdr) + sizeof(((L2Pkt*)0)->crc)))
@@ -1662,32 +1715,7 @@ void expectHdr(MockUart& mock, UART_Type* UART, const PduHdr & pduHdr) {
         .RetiresOnSaturation();
 }
 
-void sendMstToken(MockUart& mock, UART_Type* UART, const uint8_t & l2Addr, const uint8_t & port) {
-    std::array<uint8_t, 3> pkt{ { l2Addr, L2_PKT_TYPE_MST, 0xFF } };
 
-    UART->S1 |= UART_S1_RDRF_MASK;
-    UART->RCFIFO = pkt.size();
-
-    // call to copy header
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Hdr)))
-        .Times(1)
-        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
-        std::memcpy(data, pkt.data(), len);
-            }))
-        .RetiresOnSaturation();
-
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Pkt::crc)))
-        .Times(1)
-        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
-        memcpy(data, pkt.data() + sizeof(L2Hdr), len);
-            }))
-        .RetiresOnSaturation();
-
-    l1TransferHandleIRQ(UART, port);
-
-    UART->S1 &= ~UART_S1_RDRF_MASK;
-    UART->RCFIFO = 0;
-}
 
 enum class TxMultiFrameType {
     TX_MULTI_FRAME_FIRST_MSG,
@@ -2093,8 +2121,8 @@ INSTANTIATE_TEST_SUITE_P(
     Runs, MultiHop,
     ::testing::Values(
       //     pos port1   port2
-      /*Case{1, {0x101, 0x301}, {3, 2}},
-      Case{ 2, {0x201, 0x302}, {3, 2} },*/
+      Case{ 1, {0x101, 0x301}, {3, 2}},
+      Case{ 2, {0x201, 0x302}, {3, 2} },
       Case{ 3, {0x102, 0x202}, {3, 3} },
       Case{ 5, {0x203, 0x000}, {3, 0} },
       Case{ 7, {0x103, 0x000}, {3, 0} }

@@ -68,7 +68,7 @@ void l2Init() {
 	memset(l2RxPktDesc, 0xFF, sizeof l2RxPktDesc);
 	for (int port = 0; port < MAX_PORT; port++) {
 		l2RxPktDesc[port].abort = false;
-		if (maxL2Addr[port] > 1) {
+		if (port_addr[port] > 0) {
 			PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(SILENT_TIMER, BUS_CLK_HZ), &mstTmOut);
 		}
 	}
@@ -89,7 +89,6 @@ void l2CmtRx(port) {
 	l2RxPktDesc[port].abort = false;
 
 	uint8_t rxType = l2RxPktDesc[port].l2RxPkt.hdr.type;
-	l2RxPktDesc[port].l2RxPkt.hdr.type = L2_PKT_TYPE_INVALID; // invalidate msg for future
 
 	if (rxType == L2_PKT_TYPE_INVALID) {
 		return;
@@ -114,6 +113,8 @@ void l2CmtRx(port) {
 	default:
 		break;
 	}
+
+	l2RxPktDesc[port].l2RxPkt.hdr.type = L2_PKT_TYPE_INVALID; // invalidate msg for future
 
 	if (!mst_token[port]) {
 		// wait for MST pass

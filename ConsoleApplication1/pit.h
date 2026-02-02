@@ -14,3 +14,5 @@ void PITCallback(uint8_t channel);
 bool PITEnableTimerSingleShot(int32_t timerNum, uint32_t cnt, void(*p_callback)(uint8_t));
 
 bool PITDisableTimer(int32_t timerNum);
+
+void pitInit();

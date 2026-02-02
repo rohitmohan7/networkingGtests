@@ -10,6 +10,10 @@ uint32_t pitGetCurrMS() {
 	return milliSeconds;
 }
 
+void pitInit() {
+    memset(mp_PITTimerCallback, 0, sizeof(mp_PITTimerCallback));
+}
+
 bool pitTimespanExceeded(uint32_t startTime, uint32_t endTime, uint32_t duration) {
 	return ((endTime - startTime) > duration);
 }

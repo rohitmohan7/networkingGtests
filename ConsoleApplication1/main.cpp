@@ -1385,6 +1385,7 @@ struct Case {
     uint8_t devCnt[MAX_PORT];
     //uin
 };
+#define L2_PIT_TIMER_START_IDX 1
 
 class MultiHop : public ::testing::TestWithParam<Case> {
 protected:
@@ -1394,16 +1395,19 @@ protected:
         ::topology[3] = NodeCfg{ {1,2} };
         ::topology[5] = NodeCfg{ {2,0} };
         ::topology[7] = NodeCfg{ {1,0} };
+        
         for (int i = 0; i < MAX_PORT; ++i) {
             uart_ptrs[i] = &uart_objs[i];
         }
-      
     }
 
     void SetUp() override {
+        pitInit();
         // runs before each TEST_F(MyFixture, ...)
         myPos = GetParam().pos;
-        
+        for (int i = 0; i < MAX_PORT; ++i) {
+            memset(uart_ptrs[i], 0, sizeof(UART_Type));
+        }
 
         netInit(uart_ptrs);
     }
@@ -1501,9 +1505,11 @@ static void expectMst(MockUart& mock, uint8_t addr, UART_Type * uart, uint8_t po
     uart->S1 =
         (uint8_t)((uart->S1 & (uint8_t)~UART_S1_TDRE_MASK) | UART_S1_TC_MASK);
     l1TransferHandleIRQ(uart, port);
+
+    // confirm UART TX is disabled
+    ASSERT_NE((uart->C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
 }
 
-#define L2_PIT_TIMER_START_IDX 1
 TEST_P(MultiHop, mstPassFail) {
 
     MockUart mock;
@@ -1548,89 +1554,6 @@ TEST_P(MultiHop, mstPassFail) {
             ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK)) != 0, true);
         }
     }
-
-
-#if 0
-    // pass time for 
-    bool portsTested[MAX_PORT];
-    uint8_t nxtMst[MAX_PORT];
-    memset(portsTested, 0, sizeof portsTested);
-
-    bool mstToken[MAX_PORT];
-    memset(mstToken, 0, sizeof mstToken);
-
-    uint16_t time[MAX_PORT];
-    std::fill(std::begin(time), std::end(time), LINE_SILENT);
-    uint8_t tick = LINE_SILENT / 2;
-    netTick(LINE_SILENT);
-
-    while (true) {
-        bool allPortsTested = true;
-        for (int port = 0; port < MAX_PORT; port++) {
-            time[port] += tick;
-            uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
-            if (l2Addr == 0 /* ||
-                portsTested[port]*/) {
-                continue;
-            }
-
-            uint16_t mstSelTime = (l2Addr * LINE_SILENT);
-            bool expectCall = false;
-
-            // advance by LINE_SILENT
-            if (time[port] > mstSelTime) {
-                    // compute next MST
-               nxtMst[port] = (l2Addr + 1) > GetParam().devCnt[port] ? 1 : l2Addr + 1;
-               mstToken[port] = true;
-               expectCall = true;
-            }
-            else if (mstToken[port] && time[port] > (LINE_SILENT/2)) {
-                nxtMst[port] = (nxtMst[port] + 1) > GetParam().devCnt[port] ? 1 : nxtMst[port] + 1;
-
-                if (nxtMst[port] == l2Addr) // rollover test done for port
-                {
-                    portsTested[port] = true;
-                    nxtMst[port] = (nxtMst[port] + 1) > GetParam().devCnt[port] ? 1 : nxtMst[port] + 1;
-                }
-
-                expectCall = true;
-            }
-
-            if (expectCall) {
-                time[port] = 0;
-                std::array<uint8_t, 3> expected{ { nxtMst[port], L2_PKT_TYPE_MST, 0xFF } };
-                const uint8_t expectedSize = (sizeof(L2Hdr) + sizeof(L2Pkt::crc));
-
-                EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart_ptrs[port], testing::NotNull(), expectedSize))
-                    .Times(1)
-                    .WillOnce(testing::Invoke([expected](UART_Type* UART, const uint8_t* data, size_t len) {
-                    EXPECT_EQ(0, std::memcmp(data, expected.data(), expected.size()));
-                        }))
-                    .RetiresOnSaturation();
-
-                // echo
-                EXPECT_CALL(mock, l1UARTCmpNonBlocking(uart_ptrs[port], testing::NotNull(), expectedSize))
-                    .Times(1)
-                    .WillOnce(testing::Invoke([expected](UART_Type* UART, const uint8_t* data, size_t len) {
-                    EXPECT_EQ(0, std::memcmp(data, expected.data(), expected.size()));
-                    return true;
-                        }))
-                    .RetiresOnSaturation();
-            }
-
-            if (!portsTested[port]) {
-                allPortsTested = false;
-            }
-        }
-       
-        netTick(tick);
-        
-
-        if (allPortsTested) {
-            break;
-        }
-    }
-#endif
 }
 
 #if 0
@@ -2170,10 +2093,10 @@ INSTANTIATE_TEST_SUITE_P(
     Runs, MultiHop,
     ::testing::Values(
       //     pos port1   port2
-     //Case{ 1, {0x101, 0x301}, {3, 2} },
-     //Case{ 2, {0x201, 0x302}, {3, 2} },
-     //Case{ 3, {0x102, 0x202}, {3, 3} },
-     //Case{ 5, {0x203, 0x000}, {3, 0} },
+      /*Case{1, {0x101, 0x301}, {3, 2}},
+      Case{ 2, {0x201, 0x302}, {3, 2} },*/
+      Case{ 3, {0x102, 0x202}, {3, 3} },
+      Case{ 5, {0x203, 0x000}, {3, 0} },
       Case{ 7, {0x103, 0x000}, {3, 0} }
     )
 );

@@ -1,5 +1,5 @@
 ﻿#include "pit.h"
-
+#include <stdlib.h>
 /*UT Subset*/
 
 static uint32_t milliSeconds;
@@ -14,13 +14,14 @@ bool pitTimespanExceeded(uint32_t startTime, uint32_t endTime, uint32_t duration
 	return ((endTime - startTime) > duration);
 }
 
-void PITCallback(uint8_t channel)
+void PITCallback(uint8_t channel) // single shot
 {
     //Call the callback if set
-    if (mp_PITTimerCallback[1] != NULL)
+    if (mp_PITTimerCallback[channel] != NULL)
     {
-        mp_PITTimerCallback[1](channel);
-    }    
+        mp_PITTimerCallback[channel](channel);
+    }
+    mp_PITTimerCallback[channel] = NULL;
 }
 
 bool PITDisableTimer(int32_t timerNum)

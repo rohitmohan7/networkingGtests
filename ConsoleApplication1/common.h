@@ -76,5 +76,9 @@ typedef struct {
 
 #define UART_C2_RE_MASK                          (0x4U)
 
+
+static void __DMB() {
+    // do nothing
+}
 #endif
 

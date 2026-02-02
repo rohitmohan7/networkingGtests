@@ -7,7 +7,7 @@
 #define XFER_TX 0
 #define XFER_RX_ECHO 1
 
-extern bool mst_token[MAX_PORT];
+//extern volatile bool mst_token[MAX_PORT];
 extern uint8_t maxL2Addr[MAX_PORT];
 
 #if 0
@@ -28,8 +28,9 @@ static inline L2TxPktDesc* L2_GetPktDesc(uint8_t port)
 #define L2_NAK_RSN_CHR_TMEOUT 3
 
 #define LINE_SILENT 100000
-#define INTER_FRAME_SILENCE 2 // 3.5 char times for baud less than 19200, else fixed 1.750 ms
-#define INTER_CHAR_SILENCE 1 // 1.5 char times for baud less than 19200, else fixed 750 µs
+#define INTER_FRAME_SILENCE 1750 // 3.5 char times for baud less than 19200, else fixed 1.750 ms
+#define INTER_CHAR_SILENCE 750 // 1.5 char times for baud less than 19200, else fixed 750 µs
+#define INTER_FRAME_SILENCE_JITTER 200 // give some time for slave jitter
 
 #define RS485_FRAME_SIZE 256
 
@@ -103,8 +104,12 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx);
 
 void l2TxCmplt(uint8_t port);
 
-void l2AbortTx(uint8_t port);
+//void l2AbortTx(uint8_t port);
 
-bool l2AbortRead(port);
+bool l2RxAborted(uint8_t port);
+
+//uint8_t l2AbortRx(uint8_t port);
+
+void l2AbortXfer(uint8_t port);
 #endif // ! L2_NETWORK
 

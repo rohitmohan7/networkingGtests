@@ -69,6 +69,6 @@ void netTick() {
 		}
 	}
 #endif
-	l2Tick();
+	//l2Tick();
    // l4Tick(ms);
 }

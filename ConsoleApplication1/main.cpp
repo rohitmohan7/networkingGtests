@@ -29,6 +29,7 @@ extern "C" {
 #include "layer2.h"
 #include "layer1.h"
 #include "app.h"
+#include "pit.h"
 }
 
 #if 0
@@ -1468,12 +1469,88 @@ TEST_P(MultiHop, addr) {
     }
 }
 
-#if 0
+static void expectMst(MockUart& mock, uint8_t addr, UART_Type * uart, uint8_t port) {
+    std::array<uint8_t, 3> expected{ { addr, L2_PKT_TYPE_MST, 0xFF } };
+    const uint8_t expectedSize = (sizeof(L2Hdr) + sizeof(L2Pkt::crc));
+
+    EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart, testing::NotNull(), expectedSize))
+        .Times(1)
+        .WillOnce(testing::Invoke([expected](UART_Type* UART, const uint8_t* data, size_t len) {
+        EXPECT_EQ(0, std::memcmp(data, expected.data(), expected.size()));
+            }))
+        .RetiresOnSaturation();
+
+    // echo
+    EXPECT_CALL(mock, l1UARTCmpNonBlocking(uart, testing::NotNull(), expectedSize))
+        .Times(1)
+        .WillOnce(testing::Invoke([expected](UART_Type* UART, const uint8_t* data, size_t len) {
+        EXPECT_EQ(0, std::memcmp(data, expected.data(), expected.size()));
+        return true;
+            }))
+        .RetiresOnSaturation();
+
+    uart->S1 = (uint8_t)((uart->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
+    l1TransferHandleIRQ(uart, port); // complete TX of single frame
+
+    ASSERT_TRUE(
+        ((uart->C2 & (uint8_t)(UART_C2_TCIE_MASK | UART_C2_TE_MASK)) != 0U) &&
+        ((uart->C2 & (uint8_t)(UART_C2_TIE_MASK)) == 0U)
+    );
+
+    // send TX complete
+    uart->S1 =
+        (uint8_t)((uart->S1 & (uint8_t)~UART_S1_TDRE_MASK) | UART_S1_TC_MASK);
+    l1TransferHandleIRQ(uart, port);
+}
+
+#define L2_PIT_TIMER_START_IDX 1
 TEST_P(MultiHop, mstPassFail) {
 
     MockUart mock;
     g_mock = &mock;
 
+    for (int port = 0; port < MAX_PORT; port++) {
+        // confirm UART TX is disabled
+        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+
+        // confirm RX is enabled
+        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
+
+        // fire MST timeout timer
+        PITCallback(port + L2_PIT_TIMER_START_IDX);
+        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
+
+        // confirm TX TIE 
+        if (l2Addr > 0) {
+            // fire TDRE ISR
+            uint8_t nxtMst = l2Addr;
+            while (true) {
+                ASSERT_EQ((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK)) != 0, true);
+                nxtMst = (nxtMst + 1) > GetParam().devCnt[port] ? 1 : nxtMst + 1;
+
+                bool rollover = false;
+                if (nxtMst == l2Addr) // rollover test done for port
+                {
+                    rollover = true;
+                    nxtMst = (nxtMst + 1) > GetParam().devCnt[port] ? 1 : nxtMst + 1;
+                }
+
+                expectMst(mock, nxtMst, &uart_objs[port], port);
+
+                if (rollover) {
+                    break;
+                }
+
+                PITCallback(port + L2_PIT_TIMER_START_IDX);
+            }
+        }
+        else {
+            ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK)) != 0, true);
+        }
+    }
+
+
+#if 0
     // pass time for 
     bool portsTested[MAX_PORT];
     uint8_t nxtMst[MAX_PORT];
@@ -1552,9 +1629,11 @@ TEST_P(MultiHop, mstPassFail) {
         if (allPortsTested) {
             break;
         }
-    } 
+    }
+#endif
 }
 
+#if 0
 TEST_P(MultiHop, mstPassMsg) {
     MockUart mock;
     g_mock = &mock;
@@ -1617,7 +1696,7 @@ TEST_P(MultiHop, mstPassMsg) {
 
     // TODO Fails
 }
-#endif
+//#endif
 
 
 #define L2_FRAME_SIZE (RS485_FRAME_SIZE - (sizeof(L2Hdr) + sizeof(((L2Pkt*)0)->crc)))
@@ -1909,7 +1988,7 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
     milliSeconds += INTER_FRAME_SILENCE + 1;
     netTick();
 }
-//#endif
+#endif
 
 #if 0
 TEST_P(MultiHop, pduNoHopSingleFrameRetry) {

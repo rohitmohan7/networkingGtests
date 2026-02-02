@@ -2,15 +2,17 @@
 #include "layer2.h"
 #include "pit.h"
 
-static volatile bool mst_token[MAX_PORT];
-//uint32_t l2TmLstRx[MAX_PORT];
+static bool mst_token[MAX_PORT];
 L2TxPktDesc l2TxPktDesc[MAX_PORT];
 L2RxPktDesc l2RxPktDesc[MAX_PORT];
 uint8_t maxL2Addr[MAX_PORT];
-static bool txActive[MAX_PORT];
 
 #define L2_PIT_TIMER_START_IDX 1
 #define BUS_CLK_HZ 48000
+
+#define SILENT_TIMER (((uint8_t)port_addr[port]) * LINE_SILENT)
+
+#define XFER_DIR 2 // TX RX
 
 /*! Macro to convert a microsecond period to raw count value */
 #define USEC_TO_COUNT(us, clockFreqInHz) (uint64_t)(((uint64_t)(us) * (clockFreqInHz)) / 1000000U)
@@ -29,21 +31,12 @@ uint8_t getNxtMst(uint8_t port, uint8_t addr) {
 	return next;
 }
 
-static inline void l2StartTx(uint8_t port) {
-#if 0
-	l2TmLstRx[port] = 0;
-	txActive[port] = true;
-#endif
-	
-	l1StartTx(port);
-}
-
 void l2SendMst(uint8_t port, uint8_t addr) {
 	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_MST;
 	l2TxPktDesc[port].l2TxPkt.msg.mst.nextMst = getNxtMst(port, addr); // so we can select next MST
 	l2TxPktDesc[port].l2TxPkt.crc = 0xFF; //TODO
-	l2StartTx(port);
+	l1StartTx(port);
 }
 
 void l2SendMsg(uint8_t port) {
@@ -64,157 +57,36 @@ void mstTmOut(uint8_t pitChnl) {
 }
 
 void mstPassTmOut(uint8_t pitChnl) {
+	uint8_t port = pitChnl - L2_PIT_TIMER_START_IDX;
+	l2SendMst(port, l2TxPktDesc[port].l2TxPkt.msg.mst.nextMst);
 }
 
 void l2Init() {
 	memset(mst_token, 0, sizeof mst_token);
-	//memset(l2TmLstRx, 0, sizeof l2TmLstRx);
 	memset(l2TxPktDesc, 0xFF, sizeof l2TxPktDesc);
-	memset(maxL2Addr, 0xFF, sizeof maxL2Addr);
+	//memset(maxL2Addr, 0xFF, sizeof maxL2Addr);
 	memset(l2RxPktDesc, 0xFF, sizeof l2RxPktDesc);
-	memset(txActive, 0x0, sizeof txActive);
 	for (int port = 0; port < MAX_PORT; port++) {
 		l2RxPktDesc[port].abort = false;
-		uint32_t silentTimer = (((uint8_t)port_addr[port]) * LINE_SILENT);
-		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(silentTimer, BUS_CLK_HZ), &mstTmOut);
-	}
-}
-
-void l2TxCmplt(uint8_t port) {
-	//txActive[port] = false;
-	l3TxCmplt(&l2TxPktDesc[port].l2TxPkt.msg.pdu);
-	// prime for next msg
-	//l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
-	if (l2TxPktDesc[port].l2TxPkt.hdr.type & L2_PKT_TYPE_MST) {
-		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((LINE_SILENT / 2), BUS_CLK_HZ), &mstPassTmOut);
-	}
-	else {
-
-	}
-}
-
-void l2AbortTx(uint8_t port) {
-	mst_token[port] = false;
-	//txActive[port] = false;
-}
-
-/*void l2Send(L2Packet) {
-
-}*/
-#define XFER_DIR 2 // TX RX
-
-bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8_t txRxFifoLen, uint8_t xfer) {
-
-	static uint8_t tx_pdu_head[MAX_PORT];
-	static uint8_t tx_pdu_hd_off[MAX_PORT];
-	static uint8_t* ptrEcho;
-	static uint8_t lenEcho;
-
-	if (xfer == XFER_RX_ECHO) {
-		*ptr = ptrEcho;
-		*len = lenEcho;
-
-		if (ptrEcho == &l2TxPktDesc[port].l2TxPkt.crc) { // if this is CRC we are at the end
-			return true;
+		if (maxL2Addr[port] > 1) {
+			PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(SILENT_TIMER, BUS_CLK_HZ), &mstTmOut);
 		}
-		return false; // how to determine complete ?
 	}
+}
 
-	if (idx < sizeof(L2Hdr)) { // give header
-		*ptr = ptrEcho = ((uint8_t *)&l2TxPktDesc[port].l2TxPkt.hdr) + idx;
-		*len = lenEcho = sizeof(L2Hdr) - idx;
-	}
-
-	uint8_t type = l2TxPktDesc[port].l2TxPkt.hdr.type;
+static inline uint8_t getPktType(L2Pkt* pkt) {
+	uint8_t type = pkt->hdr.type;
 
 	if (type & ~L2_PKT_TYPE_MST) {
 		type &= ~L2_PKT_TYPE_MST;
 	}
-
-	switch (type) {
-	case L2_PKT_TYPE_MST:
-		// next is CRC
-		*len += sizeof(l2TxPktDesc[port].l2TxPkt.crc);
-		return true;
-	case L2_PKT_TYPE_PDU:
-		L3Pkt* l3Pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu;
-		if (idx < sizeof(PduHdr)) {
-			*len = lenEcho = sizeof(PduHdr) - idx;
-
-			tx_pdu_head[port] = getL3PktHd(l3Pkt, &tx_pdu_hd_off[port]);
-			//tx_pdu_head[xfer][port] = ps->head_page;
-			//tx_pdu_hd_off[xfer][port] = ps->head_off;
-			return false;
-		}
-		else {
-
-			if (tx_pdu_head[port] == INVALID_PAGE) { // tx complete give crc
-				*ptr = ptrEcho = &l2TxPktDesc[port].l2TxPkt.crc;
-				*len = lenEcho = sizeof(l2TxPktDesc[port].l2TxPkt.crc);
-				return true;
-			}
-
-			getL3PktFrag(&l2TxPktDesc[port].l2TxPkt.msg.pdu, 
-						  ptr, len, 
-						 &tx_pdu_head[port],
-						 &tx_pdu_hd_off[port],
-						 txRxFifoLen);
-
-			// prime it for echo
-			ptrEcho = *ptr;
-			lenEcho = *len;
-#if 0
-			// msg offset
-			if (tx_pdu_head[xfer][port] == INVALID_PAGE) {
-				*ptr = &l2TxPktDesc[port].l2TxPkt.crc;
-				*len = sizeof(l2TxPktDesc[port].l2TxPkt.crc);
-				return true;
-			}
-
-			const uint16_t base = pageOff(tx_pdu_head[xfer][port]) + (uint16_t)tx_pdu_hd_off[xfer][port];
-			// start with first page
-			*ptr = &g_pool[base];
-			*len = (UNIT - tx_pdu_hd_off[xfer][port]);
-
-			if (tx_pdu_head[xfer][port] == l4pkt->tail_page) {
-
-				if (tx_pdu_hd_off[xfer][port] < l4pkt->tail_used) {
-					*len -= (UNIT - l4pkt->tail_used);
-
-					//if (txRxFifoLen >= *len) { // all data will be sent in this single Tx
-					//	return true;
-					//}
-					tx_pdu_hd_off[xfer][port] += txRxFifoLen;
-				}
-				else { //  this is CRC
-					*ptr = &l2TxPktDesc[port].l2TxPkt.crc;
-					*len = sizeof(l2TxPktDesc[port].l2TxPkt.crc);
-					return true;
-				}
-				return false;
-
-			} else if (*len <= txRxFifoLen) { // we are at the end of current page
-				tx_pdu_head[xfer][port] = g_next[tx_pdu_head[xfer][port]];
-				tx_pdu_hd_off[xfer][port] = 0;
-				return false;
-			}
-			else {
-				tx_pdu_hd_off[xfer][port] += txRxFifoLen;
-			}
-#endif
-		}
-	}
-
-	return false;
+	return type;
 }
 
 void l2CmtRx(port) {
 	l1RxCmplt(port);
 
-	if (l2RxPktDesc[port].abort) {
-		l2RxPktDesc[port].abort = false;
-		return;
-	}
+	l2RxPktDesc[port].abort = false;
 
 	uint8_t rxType = l2RxPktDesc[port].l2RxPkt.hdr.type;
 	l2RxPktDesc[port].l2RxPkt.hdr.type = L2_PKT_TYPE_INVALID; // invalidate msg for future
@@ -229,38 +101,129 @@ void l2CmtRx(port) {
 		return;
 	}
 
+	if (rxType & L2_PKT_TYPE_MST) {
+		mst_token[port] = true;
+	}
+	rxType = getPktType(&l2RxPktDesc[port].l2RxPkt);
+
 	switch (rxType) {
 	case L2_PKT_TYPE_MST:
-		mst_token[port] = true;
+		//mst_token[port] = true;
+		// we got MST token 
 		break;
 	default:
 		break;
+	}
+
+	if (!mst_token[port]) {
+		// wait for MST pass
+		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((SILENT_TIMER - INTER_FRAME_SILENCE), BUS_CLK_HZ), &mstTmOut);
+	}
+	else {
+		l2SendMsg(port);
 	}
 }
 
 void interFrmeSlnce(uint8_t pitChnl) {
 	uint8_t port = pitChnl - L2_PIT_TIMER_START_IDX;
-	l2CmtRx(port);
+	if (!mst_token[port]) { // mst would have failed early on RX ... 
+		l2CmtRx(port);
+	}
+	else {
+		l2SendMsg(port); // send next mst message
+	}
 }
 
 void interChrSlnce(uint8_t pitChnl) {
 	uint8_t port = pitChnl - L2_PIT_TIMER_START_IDX;
-	l2RxPktDesc[port].abort = true;
+	l2RxPktDesc[port].abort = true; // abort future RX
 	PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((INTER_FRAME_SILENCE - INTER_CHAR_SILENCE), BUS_CLK_HZ), &interFrmeSlnce);
 }
 
-bool l2AbortRead(uint8_t port) {
-#if 0
-	uint32_t timeSnceLstRx = pitGetCurrMS() - l2TmLstRx[port];
-	// update rx time
-	l2TmLstRx[port] = pitGetCurrMS();
-
-	if (timeSnceLstRx > INTER_CHAR_SILENCE /* &&
-		timeSnceLstRx < INTER_FRAME_SILENCE*/) { // check if we need to check frame silence ?
-		l2RxPktDesc[port].abort = true;
+void l2TxCmplt(uint8_t port) {
+	if (getPktType(&l2TxPktDesc[port].l2TxPkt) == L2_PKT_TYPE_PDU) {
+		l3TxCmplt(&l2TxPktDesc[port].l2TxPkt.msg.pdu);
 	}
-#endif
+	// prime for next msg
+	//l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
+	if (l2TxPktDesc[port].l2TxPkt.hdr.type & L2_PKT_TYPE_MST) {
+		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((LINE_SILENT / 2), BUS_CLK_HZ), &mstPassTmOut);
+	}
+	else {
+		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((INTER_FRAME_SILENCE + INTER_FRAME_SILENCE_JITTER), BUS_CLK_HZ), &interFrmeSlnce); // give some threshold to account for slave jitter
+	}
+}
 
+static inline void l2AbortTx(uint8_t port) {
+	mst_token[port] = false;
+}
+
+/*void l2Send(L2Packet) {
+
+}*/
+
+bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8_t txRxFifoLen, uint8_t xfer) {
+
+	static uint8_t tx_pdu_head[MAX_PORT];
+	static uint8_t tx_pdu_hd_off[MAX_PORT];
+	static uint8_t* ptrEcho[MAX_PORT];
+	static uint8_t lenEcho[MAX_PORT];
+	uint8_t type = getPktType(&l2TxPktDesc[port].l2TxPkt);
+
+	if (xfer == XFER_RX_ECHO) {
+		*ptr = ptrEcho[port];
+		*len = lenEcho[port];
+
+		if ((type != L2_PKT_TYPE_PDU) || ptrEcho == &l2TxPktDesc[port].l2TxPkt.crc) { // if this is CRC we are at the end
+			return true;
+		}
+		return false; // how to determine complete ?
+	}
+
+	if (idx < sizeof(L2Hdr)) { // give header
+		*ptr = ptrEcho[port] = ((uint8_t*)&l2TxPktDesc[port].l2TxPkt.hdr) + idx;
+		*len = lenEcho[port] = sizeof(L2Hdr) - idx;
+	}
+
+	switch (type) {
+	case L2_PKT_TYPE_MST:
+		// next is CRC
+		lenEcho[port] = *len += sizeof(l2Crc);
+		return true;
+	case L2_PKT_TYPE_PDU:
+		L3Pkt* l3Pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu;
+		if (idx < sizeof(PduHdr)) {
+			*len = lenEcho[port] = sizeof(PduHdr) - idx;
+
+			tx_pdu_head[port] = getL3PktHd(l3Pkt, &tx_pdu_hd_off[port]);
+			//tx_pdu_head[xfer][port] = ps->head_page;
+			//tx_pdu_hd_off[xfer][port] = ps->head_off;
+			return false;
+		}
+		else {
+
+			if (tx_pdu_head[port] == INVALID_PAGE) { // tx complete give crc
+				*ptr = ptrEcho[port] = &l2TxPktDesc[port].l2TxPkt.crc;
+				*len = lenEcho[port] = sizeof(l2Crc);
+				return true;
+			}
+
+			getL3PktFrag(&l2TxPktDesc[port].l2TxPkt.msg.pdu, 
+						  ptr, len, 
+						 &tx_pdu_head[port],
+						 &tx_pdu_hd_off[port],
+						 txRxFifoLen);
+
+			// prime it for echo
+			ptrEcho[port] = *ptr;
+			lenEcho[port] = *len;
+		}
+	}
+
+	return false;
+}
+
+bool l2RxAborted(uint8_t port) {
 	if (l2RxPktDesc[port].abort) { // if aborted wait for next message
 		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(INTER_FRAME_SILENCE, BUS_CLK_HZ), &interFrmeSlnce);
 	} else {
@@ -269,37 +232,43 @@ bool l2AbortRead(uint8_t port) {
 	return l2RxPktDesc[port].abort;
 }
 
+static inline void l2AbortRx(uint8_t port) {
+	l2RxPktDesc[port].abort = true;
+	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
+}
+
+void l2AbortXfer(uint8_t port) {
+	l2AbortTx(port);
+	l2AbortRx(port);
+}
+
 uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 	uint8_t len = 0;
 
-	// validate message early
-	if (mst_token[port]) { // there should be no active RX when mst
-		l2AbortTx(port);
-		l2RxPktDesc[port].abort = true;
+	if (mst_token[port]) {
 		return len;
-		// maybe some special message needs response from slave?
-	}
-	else {
-		if (idx >= sizeof(l2RxPktDesc[port].l2RxPkt.hdr.addr)) {
-			if (l2RxPktDesc[port].l2RxPkt.hdr.addr != ((uint8_t)port_addr[port])) {
-				l2RxPktDesc[port].abort = true;
-				return len; // abort rx early pkt not for this dev let mst timeout retry since cannot distinguish if its due to a if due to a tx error
-			}
-		}
 	}
 
+	// validate message early
+	if (idx >= sizeof(l2RxPktDesc[port].l2RxPkt.hdr.addr)) {
+		if (l2RxPktDesc[port].l2RxPkt.hdr.addr != ((uint8_t)port_addr[port])) {
+			return len; // abort rx early pkt not for this dev let mst timeout retry since cannot distinguish if its due to a if due to a tx error
+		}
+	}
+	
 	if (idx < sizeof(L2Hdr)) { // give header
 		*ptr = ((uint8_t*)&l2RxPktDesc[port].l2RxPkt.hdr) + idx;
 		len = sizeof(L2Hdr) - idx;
 		return len; // let Hdr finish first
 	}
 
+	uint8_t type = getPktType(&l2RxPktDesc[port].l2RxPkt);
+
 	// at this point confirmed message is for this device
-	switch (l2RxPktDesc[port].l2RxPkt.hdr.type) {
+	switch (type) {
 	case L2_PKT_TYPE_MST:
 
 		if (idx + rxLen > (sizeof(L2Hdr) + sizeof(l2Crc))) {
-			l2RxPktDesc[port].abort = true;
 			return len;
 		}
 
@@ -308,26 +277,18 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 		len = 1;
 		return len;
 	default:
-		l2RxPktDesc[port].abort = true;
 		return len;
 	}
 	
 	//return len;
 }
 
-
-
-
-
-
 void l2SendPdu(uint8_t port, bool mstPass, uint8_t addr) {
 	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_PDU | (mstPass? L2_PKT_TYPE_MST: 0);
 	l2TxPktDesc[port].l2TxPkt.crc = 0xFF; // TODO
-	l2StartTx(port);
+	l1StartTx(port);
 }
-
-
 
 #if 0
 void l2Tick() { // ms is milliseconds since last tick 

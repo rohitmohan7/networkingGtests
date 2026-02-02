@@ -85,6 +85,7 @@
     <ClCompile Include="layer4.c" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="network.c" />
+    <ClCompile Include="pit.c" />
     <ClCompile Include="scheduler.c" />
   </ItemGroup>
   <ItemGroup>
@@ -97,6 +98,7 @@
     <ClInclude Include="layer3.h" />
     <ClInclude Include="layer4.h" />
     <ClInclude Include="network.h" />
+    <ClInclude Include="pit.h" />
   </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>

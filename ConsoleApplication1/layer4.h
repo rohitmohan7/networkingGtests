@@ -54,7 +54,7 @@ typedef struct {
     uint8_t  tail_used;
 
     uint8_t retryCnt;
-    uint8_t retryTmr;
+    uint32_t retryTmr;
     uint8_t txFrameCnt;
 } stream_t;
 

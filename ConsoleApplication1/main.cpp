@@ -1467,6 +1467,7 @@ extern "C" bool l1UARTCmpNonBlocking(UART_Type* UART, const uint8_t* data, size_
     return  g_mock->l1UARTCmpNonBlocking(UART, data, length);
 }
 
+//#if 0
 TEST_P(MultiHop, addr) {
     for (int port = 0; port < MAX_PORT; port++) {
         EXPECT_EQ(port_addr[port], GetParam().portAddr[port]);
@@ -1510,7 +1511,7 @@ static void expectMst(MockUart& mock, uint8_t addr, UART_Type * uart, uint8_t po
     ASSERT_NE((uart->C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
 }
 
-#if 0
+//#if 0
 TEST_P(MultiHop, mstPassFail) {
 
     MockUart mock;
@@ -1556,7 +1557,7 @@ TEST_P(MultiHop, mstPassFail) {
         }
     }
 }
-#endif
+//#endif
 
 void sendMstToken(MockUart & mock, UART_Type * UART, const uint8_t & l2Addr, const uint8_t & port) {
     std::array<uint8_t, 3> pkt{ { l2Addr, L2_PKT_TYPE_MST, 0xFF } };
@@ -1610,70 +1611,9 @@ TEST_P(MultiHop, mstPassMsg) {
             //ASSERT_NE((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true); // confirm RX is disabled
         }
     }
-
-#if 0
-    uint8_t nxtMst[MAX_PORT];
-
-    for (int port = 0; port < MAX_PORT; port++) {
-        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
-        if (l2Addr == 0 /* ||
-               portsTested[port]*/) {
-            continue;
-        }
-
-        std::array<uint8_t, 3> pkt{ { l2Addr, L2_PKT_TYPE_MST, 0xFF } };
-
-        uart_ptrs[port]->S1 |= UART_S1_RDRF_MASK;
-        uart_ptrs[port]->RCFIFO = pkt.size();
-
-        // call to copy header
-        EXPECT_CALL(mock, l1UARTReadNonBlocking(uart_ptrs[port], testing::NotNull(), sizeof(L2Hdr)))
-            .Times(1)
-            .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
-            std::memcpy(data, pkt.data(), len);
-                }))
-            .RetiresOnSaturation();
-
-        EXPECT_CALL(mock, l1UARTReadNonBlocking(uart_ptrs[port], testing::NotNull(), sizeof(L2Pkt::crc)))
-            .Times(1)
-            .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
-            memcpy(data, pkt.data() + sizeof(L2Hdr), len);
-                }))
-            .RetiresOnSaturation();
-
-        l1TransferHandleIRQ(uart_ptrs[port], port);
-
-        uart_ptrs[port]->S1 &= ~UART_S1_RDRF_MASK;
-        uart_ptrs[port]->RCFIFO = 0;
-
-        // since there is no message should pass token immediatly
-        nxtMst[port] = (l2Addr + 1) > GetParam().devCnt[port] ? 1 : l2Addr + 1;
-        std::array<uint8_t, 3> expected{ { nxtMst[port], L2_PKT_TYPE_MST, 0xFF } };
-        const uint8_t expectedSize = (sizeof(L2Hdr) + sizeof(L2Pkt::crc));
-
-        EXPECT_CALL(mock, l1UARTWriteNonBlocking(uart_ptrs[port], testing::NotNull(), expectedSize))
-            .Times(1)
-            .WillOnce(testing::Invoke([expected](UART_Type* UART, const uint8_t* data, size_t len) {
-            EXPECT_EQ(0, std::memcmp(data, expected.data(), expected.size()));
-                }))
-            .RetiresOnSaturation();
-
-        // echo
-        EXPECT_CALL(mock, l1UARTCmpNonBlocking(uart_ptrs[port], testing::NotNull(), expectedSize))
-            .Times(1)
-            .WillOnce(testing::Invoke([expected](UART_Type* UART, const uint8_t* data, size_t len) {
-            EXPECT_EQ(0, std::memcmp(data, expected.data(), expected.size()));
-            return true;
-                }))
-            .RetiresOnSaturation();
-    }
-    netTick(INTER_FRAME_SILENCE+1);
-#endif
     // TODO Fails
 }
-
-#if 0
-
+//#endif
 
 #define L2_FRAME_SIZE (RS485_FRAME_SIZE - (sizeof(L2Hdr) + sizeof(((L2Pkt*)0)->crc)))
 #define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
@@ -1807,7 +1747,7 @@ void expectTxMultiFrame(MockUart& mock,
     }
 }
 
-//#if 0
+#if 0
 TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
     MockUart mock;
     g_mock = &mock;
@@ -2134,7 +2074,66 @@ int main(int argc, char** argv) {
     return RUN_ALL_TESTS();
 }
 
+typedef struct EventData {
 
+};
+
+#define MAX_MACHINE 10
+#define MAX_STATE 32
+#define MAX_EVENTS 8
+
+struct MachineState {
+    uint8_t eventMsk;
+    uint8_t actionMsk;
+    MachineState* nextState;
+};
+
+struct Machine {
+    MachineState state[MAX_STATE];
+    uint8_t currState;
+} machine[MAX_MACHINE];
+
+struct EventDescriptor {
+    uint16_t pos;
+} eventDesc[MAX_EVENTS];
+
+#define INPUT_EVENT_MSK 0x01
+
+typedef enum eventType {
+    INPUT,
+    ARINC,
+    CAN,
+    CIRCUIT
+};
+
+#define MAX_CONFIG 100
+
+typedef struct Config_st{
+    uint16_t machineMsk;
+    uint32_t stateMsk;
+    uint8_t eventMsk;
+} Config_t;
+
+Config_st config[MAX_CONFIG];
+uint8_t machineState[MAX_MACHINE];
+
+void gpioISR() {
+
+    for (int configIdx = 0; configIdx < MAX_CONFIG; configIdx++) {
+        Config_st* cfg = &config[configIdx];
+        for (int machineIdx = 0; machineIdx < MAX_MACHINE; machineIdx++) {
+
+            if ((cfg->machineMsk & (machineIdx << 1)) && 
+                (cfg->stateMsk & (machineState[machineIdx] << 1)) &&
+                )
+
+
+            if (cfg ) {
+                eventDesc[INPUT_EVENT]
+            }
+        }
+    }
+}
 
 
 #if 0

@@ -235,7 +235,7 @@ void l1TransferHandleIRQ(UART_Type* UARTptr, uint8_t port) {
 		l1UARTTransferStopTx(UARTptr);
 
 		if (rxIndex[port] == txIndex[port]) { // echo complete 
-			l2TxCmplt(port);
+			l1TxCmplt(port);
 		}
 	}
 }

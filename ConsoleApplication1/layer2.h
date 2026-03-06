@@ -17,7 +17,7 @@ static inline L2TxPktDesc* L2_GetPktDesc(uint8_t port)
 }
 #endif
 
-#define L2_PKT_TYPE_INVALID 0xFF
+#define L2_PKT_TYPE_INVALID 0x00
 #define L2_PKT_TYPE_MST 0x80
 #define L2_PKT_TYPE_PDU 3
 
@@ -57,7 +57,6 @@ typedef struct __attribute__((packed)) L2Pkt {
 
 		struct {
 			l2Crc mstCrc;
-			uint8_t nextMst;
 		} mst;
 
 		struct {

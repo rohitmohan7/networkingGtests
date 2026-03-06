@@ -34,8 +34,7 @@ uint8_t getNxtMst(uint8_t port, uint8_t addr) {
 void l2SendMst(uint8_t port, uint8_t addr) {
 	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_MST;
-	l2TxPktDesc[port].l2TxPkt.msg.mst.nextMst = getNxtMst(port, addr); // so we can select next MST
-	l2TxPktDesc[port].l2TxPkt.crc = 0xFF; //TODO
+	l2TxPktDesc[port].l2TxPkt.msg.mst.mstCrc = 0xFF; //TODO
 	l1StartTx(port);
 }
 
@@ -46,7 +45,8 @@ void l2SendMsg(uint8_t port) {
 		l2SendPdu(port, passMST, l2Addr);
 	}
 	else {
-		l2SendMst(port, getNxtMst(port, port_addr[port]));
+		const uint8_t txAddr = l2TxPktDesc[port].l2TxPkt.hdr.addr > 0 ? l2TxPktDesc[port].l2TxPkt.hdr.addr : port_addr[port];
+		l2SendMst(port, getNxtMst(port, txAddr));
 	}
 }
 
@@ -58,14 +58,14 @@ void mstTmOut(uint8_t pitChnl) {
 
 void mstPassTmOut(uint8_t pitChnl) {
 	uint8_t port = pitChnl - L2_PIT_TIMER_START_IDX;
-	l2SendMst(port, l2TxPktDesc[port].l2TxPkt.msg.mst.nextMst);
+	l2SendMsg(port);
 }
 
 void l2Init() {
 	memset(mst_token, 0, sizeof mst_token);
-	memset(l2TxPktDesc, 0xFF, sizeof l2TxPktDesc);
+	memset(l2TxPktDesc, 0x0, sizeof l2TxPktDesc);
 	//memset(maxL2Addr, 0xFF, sizeof maxL2Addr);
-	memset(l2RxPktDesc, 0xFF, sizeof l2RxPktDesc);
+	memset(l2RxPktDesc, 0x0, sizeof l2RxPktDesc);
 	for (int port = 0; port < MAX_PORT; port++) {
 		l2RxPktDesc[port].abort = false;
 		if (port_addr[port] > 0) {
@@ -94,6 +94,8 @@ void l2CmtRx(port) {
 		return;
 	}
 
+	l2RxPktDesc[port].l2RxPkt.hdr.type = L2_PKT_TYPE_INVALID; // invalidate msg for future
+
 	bool crcValid = l2RxPktDesc[port].l2RxPkt.crc == 0xFF;
 	// validate CRC TODO
 	if (!crcValid) { // silently drop
@@ -105,16 +107,10 @@ void l2CmtRx(port) {
 	}
 	rxType = getPktType(&l2RxPktDesc[port].l2RxPkt);
 
-	switch (rxType) {
-	case L2_PKT_TYPE_MST:
-		//mst_token[port] = true;
-		// we got MST token 
-		break;
+	switch (rxType) { //TODO
 	default:
 		break;
 	}
-
-	l2RxPktDesc[port].l2RxPkt.hdr.type = L2_PKT_TYPE_INVALID; // invalidate msg for future
 
 	if (!mst_token[port]) {
 		// wait for MST pass
@@ -236,6 +232,7 @@ bool l2RxAborted(uint8_t port) {
 static inline void l2AbortRx(uint8_t port) {
 	l2RxPktDesc[port].abort = true;
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
+	l2TxPktDesc[port].l2TxPkt.hdr.addr = 0x00;
 }
 
 void l2AbortXfer(uint8_t port) {
@@ -275,7 +272,7 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 
 		// next is CRC
 		*ptr = ((uint8_t*)&l2RxPktDesc[port].l2RxPkt.crc);
-		len = 1;
+		len = sizeof(l2Crc);
 		return len;
 	default:
 		return len;

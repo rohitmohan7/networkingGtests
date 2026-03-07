@@ -17,6 +17,7 @@ stream_t streams[MAX_POS][MAX_PRIORITY];
 TxOrderType txOrder = 0;
 
 void l4Init() {
+	txOrder = 0;
 	for (int prio = 0; prio < MAX_PRIORITY; prio++) {
 		for (int pos = 0; pos < MAX_POS; pos++) {
 			stream_t* s = &streams[pos][prio];
@@ -143,11 +144,13 @@ void freeStream(stream_t * s) {
 	s->tail_page = s->head_page;
 }
 
-void clearMsgFrame(L4Pkt* l4Pkt, uint8_t prio) {
+static inline bool clearMsgFrame(L4Pkt* l4Pkt, uint8_t prio, bool allFrames) {
 	stream_t* s = &streams[l4Pkt->pos][prio];
 	L4Hdr* txHdr = &s->txMsgHdr;
+	L4Hdr* hdr = &l4Pkt->hdr;
 	// free till Frame length
-	uint8_t len = (txHdr->msgLen > L4_FRAME_SIZE) ? L4_FRAME_SIZE: txHdr->msgLen;
+	uint8_t len = (!allFrames && txHdr->msgLen > L4_FRAME_SIZE) ? L4_FRAME_SIZE: 
+		(txHdr->msgLen + (allFrames? hdr->msgLen:0));
 	while (len > 0) {
 
 		uint8_t pageLen = UNIT - s->head_off;
@@ -166,16 +169,17 @@ void clearMsgFrame(L4Pkt* l4Pkt, uint8_t prio) {
 	}
 
 	// advance stream
-	L4Hdr* hdr = &l4Pkt->hdr;
+	
 	
 	if (s->head_page != INVALID_PAGE) {
 
-		if (hdr->msgLen == 0) {
+		if (allFrames || hdr->msgLen == 0) {
 			txHdr->msgNo++; // increment seq number
 			readFromPgs(s, (uint8_t*)&txHdr->msgLen, sizeof(txHdr->msgLen));
 
 			if (txHdr->msgLen == 0) { //  no more message pending free stream
 				freeStream(s);
+				return true;
 			}
 			else {
 				readFromPgs(s, (uint8_t*)&s->txOrder, sizeof(TxOrderType));
@@ -188,7 +192,9 @@ void clearMsgFrame(L4Pkt* l4Pkt, uint8_t prio) {
 		else {
 			txHdr->msgLen = hdr->msgLen;
 		}
+		return false;
 	}
+	return true;
 }
 
 bool l4lstMsgFrm(uint16_t pos, uint8_t prio) {
@@ -198,7 +204,7 @@ bool l4lstMsgFrm(uint16_t pos, uint8_t prio) {
 
 void l4TxCmplt(L4Pkt* l4Pkt, uint8_t prio) {
 	 if (!(l4Pkt->hdr.msgFlgs & L4_MSG_FLAG_REQ_ACK)) { // this msg does not require an ack, frame can be cleared from page buffer
-		 clearMsgFrame(l4Pkt, prio);
+		 clearMsgFrame(l4Pkt, prio, false);
 	 } else {
 		 stream_t* s = &streams[l4Pkt->pos][prio];
 		 s->txFrameCnt++;
@@ -256,6 +262,13 @@ bool getL4Pkt(L4Pkt* l4Pkt, uint16_t pos, uint8_t prio, uint8_t pktPrio) {
 				if (ps->retryCnt >= MAX_L4_RETRY)
 				{
 					// drop move and move to next msg
+					const bool strmEmpty = clearMsgFrame(l4Pkt, prio, true);
+					const bool txOrdrPrempt = ((l4Pkt->pos != pos) || (pktPrio != prio)) && 
+						(ps->txOrder > currTxOrder);
+
+					if (strmEmpty || txOrdrPrempt) {
+						return false;
+					}
 				} else {
 					ps->txMsgHdr.msgFlgs &= ~L4_MSG_FLAG_PENDING_ACK;
 					ps->retryCnt++;

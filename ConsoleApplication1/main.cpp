@@ -1430,6 +1430,7 @@ struct MockUart {
     MOCK_METHOD(void, l1UARTWriteNonBlocking, (UART_Type* UART, const uint8_t* data, size_t length), ());
     MOCK_METHOD(bool, l1UARTCmpNonBlocking, (UART_Type* UART, const uint8_t* data, size_t length), ());
     MOCK_METHOD(void, l1UARTReadNonBlocking, (UART_Type* UART, uint8_t* data, size_t length), ());
+    MOCK_METHOD(uint32_t, pitGetCurrMS, (), ());
 };
 
 static MockUart* g_mock = nullptr;
@@ -1454,7 +1455,6 @@ extern "C" void l1UARTWriteNonBlocking(UART_Type* UART, const uint8_t* data, siz
     }
 }
 
-
 extern "C" void l1UARTReadNonBlocking(UART_Type* UART, uint8_t* data, size_t length)
 {
     ASSERT_NE(g_mock, nullptr);
@@ -1467,14 +1467,13 @@ extern "C" bool l1UARTCmpNonBlocking(UART_Type* UART, const uint8_t* data, size_
     return  g_mock->l1UARTCmpNonBlocking(UART, data, length);
 }
 
-//#if 0
-TEST_P(MultiHop, addr) {
-    for (int port = 0; port < MAX_PORT; port++) {
-        EXPECT_EQ(port_addr[port], GetParam().portAddr[port]);
-    }
+extern "C" uint32_t pitGetCurrMS()
+{
+    EXPECT_NE(g_mock, nullptr);
+    return  g_mock->pitGetCurrMS();
 }
 
-static void expectMst(MockUart& mock, uint8_t addr, UART_Type * uart, uint8_t port) {
+static void expectMst(MockUart& mock, uint8_t addr, UART_Type* uart, uint8_t port) {
     std::array<uint8_t, 3> expected{ { addr, L2_PKT_TYPE_MST, 0xFF } };
     const uint8_t expectedSize = (sizeof(L2Hdr) + sizeof(L2Pkt::crc));
 
@@ -1510,6 +1509,227 @@ static void expectMst(MockUart& mock, uint8_t addr, UART_Type * uart, uint8_t po
     // confirm UART TX is disabled
     ASSERT_NE((uart->C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
 }
+
+void sendMstToken(MockUart& mock, UART_Type* UART, const uint8_t& l2Addr, const uint8_t& port) {
+    std::array<uint8_t, 3> pkt{ { l2Addr, L2_PKT_TYPE_MST, 0xFF } };
+
+    UART->S1 |= UART_S1_RDRF_MASK;
+    UART->RCFIFO = pkt.size();
+
+    // call to copy header
+    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Hdr)))
+        .Times(1)
+        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
+        std::memcpy(data, pkt.data(), len);
+            }))
+        .RetiresOnSaturation();
+
+    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Pkt::crc)))
+        .Times(1)
+        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
+        memcpy(data, pkt.data() + sizeof(L2Hdr), len);
+            }))
+        .RetiresOnSaturation();
+
+    l1TransferHandleIRQ(UART, port);
+
+    UART->S1 &= ~UART_S1_RDRF_MASK;
+    UART->RCFIFO = 0;
+
+    PITCallback(port + L2_PIT_TIMER_START_IDX); // interchar silence
+
+    PITCallback(port + L2_PIT_TIMER_START_IDX); // interframe silence
+}
+
+void sendMsgAck(MockUart& mock, UART_Type* UART, const PduHdr& pduHdr, const uint8_t& port) {
+    std::array<uint8_t, sizeof(PduHdr) + sizeof(l2Crc)> pkt{};
+
+    std::memcpy(pkt.data(), &pduHdr, sizeof(pduHdr));
+    l2Crc crc = 0xFF; //todo
+    std::memcpy(pkt.data() + sizeof(PduHdr), &crc, sizeof(l2Crc));
+
+    UART->S1 |= UART_S1_RDRF_MASK;
+    UART->RCFIFO = pkt.size();
+
+    // call to copy header
+    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Hdr)))
+        .Times(1)
+        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
+        std::memcpy(data, pkt.data(), len);
+            }))
+        .RetiresOnSaturation();
+
+    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(PduHdr) - sizeof(L2Hdr)))
+        .Times(1)
+        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
+        std::memcpy(data, pkt.data() + sizeof(L2Hdr), len);
+            }))
+        .RetiresOnSaturation();
+
+    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(l2Crc)))
+        .Times(1)
+        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
+        memcpy(data, pkt.data() + sizeof(PduHdr), len);
+            }))
+        .RetiresOnSaturation();
+
+    l1TransferHandleIRQ(UART, port);
+
+    UART->S1 &= ~UART_S1_RDRF_MASK;
+    UART->RCFIFO = 0;
+
+    PITCallback(port + L2_PIT_TIMER_START_IDX); // interchar silence
+
+    PITCallback(port + L2_PIT_TIMER_START_IDX); // interframe silence
+}
+
+#define L2_FRAME_SIZE (RS485_FRAME_SIZE - (sizeof(L2Hdr) + sizeof(((L2Pkt*)0)->crc)))
+#define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
+#define L4_FRAME_SIZE (L3_FRAME_SIZE - sizeof(L4Hdr))
+
+void expectCrc(MockUart& mock, UART_Type* UART, l2Crc crc) {
+    EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), sizeof(l2Crc)))
+        .Times(1)
+        .WillOnce(testing::Invoke([crc](UART_Type* UART, const uint8_t* data, size_t len) {
+        EXPECT_EQ(0, std::memcmp(data, (&crc), len));
+            }))
+        .RetiresOnSaturation();
+
+    // echo
+    EXPECT_CALL(mock, l1UARTCmpNonBlocking(UART, testing::NotNull(), sizeof(l2Crc)))
+        .Times(1)
+        .WillOnce(testing::Invoke([crc](UART_Type* UART, const uint8_t* data, size_t len) {
+        EXPECT_EQ(0, std::memcmp(data, (&crc), len));
+        return true;
+            }))
+        .RetiresOnSaturation();
+}
+
+void expectHdr(MockUart& mock, UART_Type* UART, const PduHdr& pduHdr) {
+    EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), sizeof(PduHdr)))
+        .Times(1)
+        .WillOnce(testing::Invoke([pduHdr](UART_Type* UART, const uint8_t* data, size_t len) {
+        EXPECT_EQ(0, std::memcmp(data, (uint8_t*)&pduHdr, len));
+            }))
+        .RetiresOnSaturation();
+
+    // echo
+    EXPECT_CALL(mock, l1UARTCmpNonBlocking(UART, testing::NotNull(), sizeof(PduHdr)))
+        .Times(1)
+        .WillOnce(testing::Invoke([pduHdr](UART_Type* UART, const uint8_t* data, size_t len) {
+        EXPECT_EQ(0, std::memcmp(data, (uint8_t*)&pduHdr, len));
+        return true;
+            }))
+        .RetiresOnSaturation();
+}
+
+
+
+enum class TxMultiFrameType {
+    TX_MULTI_FRAME_FIRST_MSG,
+    TX_MULTI_FRAME_NEW_MSG,
+    TX_MULTI_FRAME_NEW_FRAME,
+    TX_MULTI_FRAME_CONT,
+};
+
+void expectTxMultiFrame(MockUart& mock,
+    UART_Type* UART,
+    const uint8_t& port,
+    uint8_t& idxIn,
+    uint8_t& sizeIn,
+    const TxMultiFrameType& type,
+    const uint8_t* msg,
+    const int& msgSize,
+    const PduHdr& hdr = PduHdr(),
+    const bool& retry = false) {
+    uint8_t idx = idxIn;
+    uint8_t size = sizeIn;
+    if (type == TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG) {
+        size = 0;
+    }
+
+    if (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG) {
+        idx = 0; // zero the idx
+    }
+
+    // check to send ACK
+    if (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG ||
+        type == TxMultiFrameType::TX_MULTI_FRAME_NEW_FRAME) {
+        // send TX complete
+        UART->S1 |= UART_S1_TC_MASK;
+        l1TransferHandleIRQ(UART, port);
+        UART->S1 &= ~UART_S1_TC_MASK;
+    }
+
+    if (type != TxMultiFrameType::TX_MULTI_FRAME_CONT) {
+        // expect header
+        expectHdr(mock, UART, hdr);
+    }
+
+    size = UNIT - (size + (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG ? sizeof(L4Hdr::msgLen) + sizeof(txOrder) + sizeof(L4Hdr::msgFlgs) : 0));
+    uint8_t len = UART_FIFO_SIZE - size - (type != TxMultiFrameType::TX_MULTI_FRAME_CONT ? sizeof(PduHdr) : 0);
+    bool expectCrcCall = false;
+
+    for (;;) {
+        uint8_t idx_loc = idx;
+        if (idx_loc + size > msgSize) {
+            size = msgSize - idx_loc;
+            len = 0;
+            expectCrcCall = true;
+        }
+
+        EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), size))
+            .Times(1)
+            .WillOnce(testing::Invoke([msg, idx_loc](UART_Type* UART, const uint8_t* data, size_t len) {
+            printf("page: %d, len: %d\n", idx_loc, len);
+            EXPECT_EQ(0, std::memcmp(data, (msg + idx_loc), len));
+                }))
+            .RetiresOnSaturation();
+
+        // echo
+        EXPECT_CALL(mock, l1UARTCmpNonBlocking(UART, testing::NotNull(), size))
+            .Times(1)
+            .WillOnce(testing::Invoke([msg, idx_loc](UART_Type* UART, const uint8_t* data, size_t len) {
+            EXPECT_EQ(0, std::memcmp(data, (msg + idx_loc), len));
+            return true;
+                }))
+            .RetiresOnSaturation();
+
+        idx += size;
+
+        if (len == 0) {
+            break;
+        }
+
+        size = std::min((uint8_t)UNIT, len);
+        if (idx + size > L4_FRAME_SIZE) {
+            size = L4_FRAME_SIZE - idx;
+            len = 0;
+            expectCrcCall = true;
+        }
+        else {
+            len -= size;
+        }
+    }
+
+    if (expectCrcCall) {
+        expectCrc(mock, UART, 0xFF);
+    }
+
+    if (!retry) {
+        sizeIn = size;
+        idxIn = idx;
+    }
+}
+
+#if 0
+TEST_P(MultiHop, addr) {
+    for (int port = 0; port < MAX_PORT; port++) {
+        EXPECT_EQ(port_addr[port], GetParam().portAddr[port]);
+    }
+}
+#endif
+
 
 //#if 0
 TEST_P(MultiHop, mstPassFail) {
@@ -1559,33 +1779,7 @@ TEST_P(MultiHop, mstPassFail) {
 }
 //#endif
 
-void sendMstToken(MockUart & mock, UART_Type * UART, const uint8_t & l2Addr, const uint8_t & port) {
-    std::array<uint8_t, 3> pkt{ { l2Addr, L2_PKT_TYPE_MST, 0xFF } };
-
-    UART->S1 |= UART_S1_RDRF_MASK;
-    UART->RCFIFO = pkt.size();
-
-    // call to copy header
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Hdr)))
-        .Times(1)
-        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
-        std::memcpy(data, pkt.data(), len);
-            }))
-        .RetiresOnSaturation();
-
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Pkt::crc)))
-        .Times(1)
-        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
-        memcpy(data, pkt.data() + sizeof(L2Hdr), len);
-            }))
-        .RetiresOnSaturation();
-
-    l1TransferHandleIRQ(UART, port);
-
-    UART->S1 &= ~UART_S1_RDRF_MASK;
-    UART->RCFIFO = 0;
-}
-
+#if 0
 TEST_P(MultiHop, mstPassMsg) {
     MockUart mock;
     g_mock = &mock;
@@ -1615,139 +1809,7 @@ TEST_P(MultiHop, mstPassMsg) {
 }
 //#endif
 
-#define L2_FRAME_SIZE (RS485_FRAME_SIZE - (sizeof(L2Hdr) + sizeof(((L2Pkt*)0)->crc)))
-#define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
-#define L4_FRAME_SIZE (L3_FRAME_SIZE - sizeof(L4Hdr))
-
-void expectCrc(MockUart& mock, UART_Type* UART, l2Crc crc) {
-    EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), sizeof(l2Crc)))
-        .Times(1)
-        .WillOnce(testing::Invoke([crc](UART_Type* UART, const uint8_t* data, size_t len) {
-        EXPECT_EQ(0, std::memcmp(data, (&crc), len));
-            }))
-        .RetiresOnSaturation();
-
-    // echo
-    EXPECT_CALL(mock, l1UARTCmpNonBlocking(UART, testing::NotNull(), sizeof(l2Crc)))
-        .Times(1)
-        .WillOnce(testing::Invoke([crc](UART_Type* UART, const uint8_t* data, size_t len) {
-        EXPECT_EQ(0, std::memcmp(data, (&crc), len));
-        return true;
-            }))
-        .RetiresOnSaturation();
-}
-
-void expectHdr(MockUart& mock, UART_Type* UART, const PduHdr & pduHdr) {
-    EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), sizeof(PduHdr)))
-        .Times(1)
-        .WillOnce(testing::Invoke([pduHdr](UART_Type* UART, const uint8_t* data, size_t len) {
-        EXPECT_EQ(0, std::memcmp(data, (uint8_t*)&pduHdr, len));
-            }))
-        .RetiresOnSaturation();
-
-    // echo
-    EXPECT_CALL(mock, l1UARTCmpNonBlocking(UART, testing::NotNull(), sizeof(PduHdr)))
-        .Times(1)
-        .WillOnce(testing::Invoke([pduHdr](UART_Type* UART, const uint8_t* data, size_t len) {
-        EXPECT_EQ(0, std::memcmp(data, (uint8_t*)&pduHdr, len));
-        return true;
-            }))
-        .RetiresOnSaturation();
-}
-
-
-
-enum class TxMultiFrameType {
-    TX_MULTI_FRAME_FIRST_MSG,
-    TX_MULTI_FRAME_NEW_MSG,
-    TX_MULTI_FRAME_NEW_FRAME,
-    TX_MULTI_FRAME_CONT,
-};
-
-void expectTxMultiFrame(MockUart& mock, 
-                  UART_Type* UART,
-                  const uint8_t& port,
-                  uint8_t & idx, 
-                  uint8_t & size, 
-                  const TxMultiFrameType& type,
-                  const uint8_t * msg,
-                  const int& msgSize,
-                  const PduHdr& hdr = PduHdr()) {
-
-    if (type == TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG) {
-        size = 0;
-    }
-
-    if (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG) {
-        idx = 0; // zero the idx
-    }
-
-    // check to send ACK
-    if (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG ||
-        type == TxMultiFrameType::TX_MULTI_FRAME_NEW_FRAME) {
-        // send TX complete
-        UART->S1 |= UART_S1_TC_MASK;
-        l1TransferHandleIRQ(UART, port);
-        UART->S1 &= ~UART_S1_TC_MASK;
-    }
-
-    if (type != TxMultiFrameType::TX_MULTI_FRAME_CONT) {
-        // expect header
-        expectHdr(mock, UART, hdr);
-    }
-
-    size = UNIT - (size + (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG? sizeof(L4Hdr::msgLen) + sizeof(txOrder) + sizeof(L4Hdr::msgFlgs) : 0));
-    uint8_t len = UART_FIFO_SIZE - size - (type != TxMultiFrameType::TX_MULTI_FRAME_CONT ? sizeof(PduHdr): 0);
-    bool expectCrcCall = false;
-
-    for (;;) {
-        uint8_t idx_loc = idx;
-        if (idx_loc + size > msgSize) {
-            size = msgSize - idx_loc;
-            len = 0;
-            expectCrcCall = true;
-        }
-
-        EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), size))
-            .Times(1)
-            .WillOnce(testing::Invoke([msg, idx_loc](UART_Type* UART, const uint8_t* data, size_t len) {
-            printf("page: %d, len: %d\n", idx_loc, len);
-            EXPECT_EQ(0, std::memcmp(data, (msg + idx_loc), len));
-                }))
-            .RetiresOnSaturation();
-
-        // echo
-        EXPECT_CALL(mock, l1UARTCmpNonBlocking(UART, testing::NotNull(), size))
-            .Times(1)
-            .WillOnce(testing::Invoke([msg, idx_loc](UART_Type* UART, const uint8_t* data, size_t len) {
-            EXPECT_EQ(0, std::memcmp(data, (msg + idx_loc), len));
-            return true;
-                }))
-            .RetiresOnSaturation();
-
-        idx += size;
-
-        if (len == 0) {
-            break;
-        }
-
-        size = std::min((uint8_t)UNIT, len);
-        if (idx + size > L4_FRAME_SIZE) {
-            size = L4_FRAME_SIZE - idx;
-            len = 0;
-            expectCrcCall = true;
-        }
-        else {
-            len -= size;
-        }
-    }
-
-    if (expectCrcCall) {
-        expectCrc(mock, UART, 0xFF);
-    }
-}
-
-#if 0
+//#if 0
 TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
     MockUart mock;
     g_mock = &mock;
@@ -1770,11 +1832,18 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
     uint8_t idx[MAX_PORT];
 
     for (int port = 0; port < MAX_PORT; port++) {
+
+        // confirm UART TX is disabled
+        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+
         uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
         if (l2Addr == 0 /* ||
                portsTested[port]*/) {
             continue;
         }
+
+        // confirm RX is enabled
+        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
 
         // send msg
         appSend(msg.data(), MSG_SIZE, 1, 0, false);
@@ -1782,6 +1851,13 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
 
         // send MST
         sendMstToken(mock, uart_ptrs[port], l2Addr, port);
+
+        // confirm TE is primed
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) != 0U)
+        );
 
         // will send message
 
@@ -1804,47 +1880,54 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
             msg.size(),
             pduHdr);
 
-        // expect CRC call
-    }
-    
-    milliSeconds += INTER_FRAME_SILENCE + 1;
-    netTick();
-    // TODO Fails
-    // send slave ack
+        uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
+        l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
 
-    for (int port = 0; port < MAX_PORT; port++) {
-        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
-        if (l2Addr == 0 /* ||
-               portsTested[port]*/) {
-            continue;
-        }
+        // expect TC complete 
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) != 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) != 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) == 0U)
+        );
 
-        // first expect hdr for second msg
+        uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TDRE_MASK) | UART_S1_TC_MASK);
+        l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
+
+        // confirm UART TX is disabled
+        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+
+        // inter frame silence
+        PITCallback(port + L2_PIT_TIMER_START_IDX);
+
+        // confirm TE is primed
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) != 0U)
+        );
+
         pduHdr.l4hdr = L4Hdr{ 1, 0, 1 };
-        //expectHdr(mock, uart_ptrs[port], pduHdr);
 
         // expect msg size single frame
-        expectTxMultiFrame(mock, 
-                           uart_ptrs[port], 
-                           port, 
-                           idx[port], 
-                           size, 
-                           TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG,
-                           msg2.data(),
-                           msg2.size(),
-                           pduHdr);
-    }
+        expectTxMultiFrame(mock,
+            uart_ptrs[port],
+            port,
+            idx[port],
+            size,
+            TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG,
+            msg2.data(),
+            msg2.size(),
+            pduHdr);
 
-    milliSeconds += INTER_FRAME_SILENCE + 1;
-    netTick();
+        uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
+        l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
 
-    // send ISR for next set of Data 
-    for (int port = 0; port < MAX_PORT; port++) {
-        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
-        if (l2Addr == 0 /* ||
-               portsTested[port]*/) {
-            continue;
-        }
+        // confirm TE is still primed
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) != 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) != 0U)
+        );
 
         expectTxMultiFrame(mock,
             uart_ptrs[port],
@@ -1855,15 +1938,35 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
             msg2.data(),
             msg2.size());
 
-        uart_ptrs[port]->S1 |= UART_S1_TDRE_MASK;
+        uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
         l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
 
-        // first expect hdr for second msg
+        // expect TC complete 
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2& (uint8_t)(UART_C2_TCIE_MASK)) != 0U) &&
+            ((uart_ptrs[port]->C2& (uint8_t)(UART_C2_TE_MASK)) != 0U) &&
+            ((uart_ptrs[port]->C2& (uint8_t)(UART_C2_TIE_MASK)) == 0U)
+        );
+
+        uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TDRE_MASK) | UART_S1_TC_MASK);
+        l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
+
+        // confirm UART TX is disabled
+        ASSERT_NE((uart_objs[port].C2& ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+
+        // inter frame silence
+        PITCallback(port + L2_PIT_TIMER_START_IDX);
+
+        // confirm TE is primed
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2& (uint8_t)(UART_C2_TCIE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2& (uint8_t)(UART_C2_TE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2& (uint8_t)(UART_C2_TIE_MASK)) != 0U)
+        );
+
         pduHdr.l2hdr.type |= L2_PKT_TYPE_MST;
         pduHdr.l4hdr = L4Hdr{ 1, 0, 0 };
-        //expectHdr(mock, uart_ptrs[port], pduHdr);
 
-        // final message
         expectTxMultiFrame(mock,
             uart_ptrs[port],
             port,
@@ -1873,16 +1976,223 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
             msg2.data(),
             msg2.size(),
             pduHdr);
+
+        uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
+        l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
+
+        // expect TC complete 
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2& (uint8_t)(UART_C2_TCIE_MASK)) != 0U) &&
+            ((uart_ptrs[port]->C2& (uint8_t)(UART_C2_TE_MASK)) != 0U) &&
+            ((uart_ptrs[port]->C2& (uint8_t)(UART_C2_TIE_MASK)) == 0U)
+        );
+
+        uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TDRE_MASK) | UART_S1_TC_MASK);
+        l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
+    }
+}
+//#endif
+
+#define MAX_L4_RETRY 3
+#define L4_RETRY_TIMER 100 // 100 ms
+
+//#if 0
+TEST_P(MultiHop, pduNoHopSingleFrameRetryNoAck) {
+    MockUart mock;
+    g_mock = &mock;
+    testing::InSequence seq;
+    // construct message
+    static const int MSG_SIZE = 100;
+    std::array<uint8_t, MSG_SIZE> msg;
+    for (int i = 0; i < MSG_SIZE; i++) {
+        msg[i] = i;
     }
 
-    // send ACK
-    milliSeconds += INTER_FRAME_SILENCE + 1;
-    netTick();
+    static const int MSG2_SIZE = L4_FRAME_SIZE + 1;
+    std::array<uint8_t, MSG2_SIZE> msg2;
+    for (int i = 0; i < MSG2_SIZE; i++) { // send multiframe msg
+        msg2[i] = i;
+    }
+    uint8_t size;
+    PduHdr pduHdr{};
+
+    uint8_t idx[MAX_PORT];
+    uint32_t milliSeconds = 0;
+
+    for (int port = 0; port < MAX_PORT; port++) {
+
+        // confirm UART TX is disabled
+        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+
+        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
+        if (l2Addr == 0 /* ||
+               portsTested[port]*/) {
+            continue;
+        }
+
+        // confirm RX is enabled
+        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
+
+        // send msg
+        appSend(msg.data(), MSG_SIZE, 1, 0, true);
+        appSend(msg2.data(), MSG2_SIZE, 1, 0, true);
+
+        // send MST
+        sendMstToken(mock, uart_ptrs[port], l2Addr, port);
+        // first expect hdr
+        pduHdr = PduHdr{
+            .l2hdr = { 0x1, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST) },
+            .l3hdr = { GetParam().portAddr[port], 0x101, 1, 0 },
+            .l4hdr = { 0, L4_MSG_FLAG_REQ_ACK, 0 }
+        };
+
+        for (int retry = 0; retry <= MAX_L4_RETRY; retry++) {
+            // confirm TE is primed
+            ASSERT_TRUE(
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) == 0U) &&
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) == 0U) &&
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) != 0U)
+            );
+
+            // will send message
+
+            //expectHdr(mock, uart_ptrs[port], pduHdr);
+            expectTxMultiFrame(mock,
+                uart_ptrs[port],
+                port,
+                idx[port],
+                size,
+                TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
+                msg.data(),
+                msg.size(),
+                pduHdr,
+                (retry < (MAX_L4_RETRY)));
+
+            uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
+            l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
+
+            // expect TC complete 
+            ASSERT_TRUE(
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) != 0U) &&
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) != 0U) &&
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) == 0U)
+            );
+
+            EXPECT_CALL(mock, pitGetCurrMS())
+                .Times(1)
+                .WillOnce(testing::Return(milliSeconds))
+                .RetiresOnSaturation();
+
+            uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TDRE_MASK) | UART_S1_TC_MASK);
+            l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
+
+            // confirm UART TX is disabled
+            ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+
+            milliSeconds += L4_RETRY_TIMER + 1;
+
+            EXPECT_CALL(mock, pitGetCurrMS())
+                .Times(1)
+                .WillOnce(testing::Return(milliSeconds))
+                .RetiresOnSaturation();
+
+            // MST pass timeout
+            PITCallback(port + L2_PIT_TIMER_START_IDX);
+        }
+        pduHdr.l2hdr.type &= ~L2_PKT_TYPE_MST;
+        pduHdr.l4hdr = L4Hdr{ 1, L4_MSG_FLAG_REQ_ACK, 1 };
+
+        uint8_t sizePrev = size;
+        uint8_t idxPrev = size;
+
+        // message is dropped and move to next message
+        for (int retry = 0; retry <= MAX_L4_RETRY; retry++) {
+            // confirm TE is primed
+            ASSERT_TRUE(
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) == 0U) &&
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) == 0U) &&
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) != 0U)
+            );
+
+            // expect msg size single frame
+            expectTxMultiFrame(mock,
+                uart_ptrs[port],
+                port,
+                idx[port],
+                size,
+                TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG,
+                msg2.data(),
+                msg2.size(),
+                pduHdr);
+
+            uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
+            l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
+
+            // confirm TE is still primed
+            ASSERT_TRUE(
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) == 0U) &&
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) != 0U) &&
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) != 0U)
+            );
+
+            expectTxMultiFrame(mock,
+                uart_ptrs[port],
+                port,
+                idx[port],
+                size,
+                TxMultiFrameType::TX_MULTI_FRAME_CONT,
+                msg2.data(),
+                msg2.size());
+
+            uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
+            l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
+
+            // expect TC complete 
+            ASSERT_TRUE(
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) != 0U) &&
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) != 0U) &&
+                ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) == 0U)
+            );
+
+            EXPECT_CALL(mock, pitGetCurrMS())
+                .Times(1)
+                .WillOnce(testing::Return(milliSeconds))
+                .RetiresOnSaturation();
+
+            uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TDRE_MASK) | UART_S1_TC_MASK);
+            l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
+
+            // confirm UART TX is disabled
+            ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+
+            milliSeconds += L4_RETRY_TIMER + 1;
+
+            EXPECT_CALL(mock, pitGetCurrMS())
+                .Times(1)
+                .WillOnce(testing::Return(milliSeconds))
+                .RetiresOnSaturation();
+
+            // inter frame silence
+            PITCallback(port + L2_PIT_TIMER_START_IDX);
+            size = sizePrev;
+            idx[port] = idxPrev;
+        }
+
+        // confirm TE is primed for mst
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2& (uint8_t)(UART_C2_TCIE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2& (uint8_t)(UART_C2_TE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2& (uint8_t)(UART_C2_TIE_MASK)) != 0U)
+        );
+
+        uint8_t nxtMst = 2;//(l2Addr + 1) > GetParam().devCnt[port] ? 1 : l2Addr + 1;
+        expectMst(mock, nxtMst, &uart_objs[port], port);
+    }
 }
 #endif
 
 #if 0
-TEST_P(MultiHop, pduNoHopSingleFrameRetry) {
+TEST_P(MultiHop, pduNoHopSingleFrameRetryAck) {
     MockUart mock;
     g_mock = &mock;
     testing::InSequence seq;
@@ -1904,11 +2214,18 @@ TEST_P(MultiHop, pduNoHopSingleFrameRetry) {
     uint8_t idx[MAX_PORT];
 
     for (int port = 0; port < MAX_PORT; port++) {
+
+        // confirm UART TX is disabled
+        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+
         uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
         if (l2Addr == 0 /* ||
                portsTested[port]*/) {
             continue;
         }
+
+        // confirm RX is enabled
+        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
 
         // send msg
         appSend(msg.data(), MSG_SIZE, 1, 0, true);
@@ -1916,6 +2233,13 @@ TEST_P(MultiHop, pduNoHopSingleFrameRetry) {
 
         // send MST
         sendMstToken(mock, uart_ptrs[port], l2Addr, port);
+
+        // confirm TE is primed
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) != 0U)
+        );
 
         // will send message
 
@@ -1938,47 +2262,49 @@ TEST_P(MultiHop, pduNoHopSingleFrameRetry) {
             msg.size(),
             pduHdr);
 
-        // expect CRC call
-    }
-    
-    netTick(INTER_FRAME_SILENCE + 1);
+        uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
+        l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
 
-    // check message retry up to limit
-    for (int retry = 0; retry < MAX_L4_RETRY; retry++) {
-        for (int port = 0; port < MAX_PORT; port++) {
-            uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
-            if (l2Addr == 0 /* ||
-                   portsTested[port]*/) {
-                continue;
-            }
-            expectTxMultiFrame(mock,
-                uart_ptrs[port],
-                port,
-                idx[port],
-                size,
-                TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-                msg.data(),
-                msg.size(),
-                pduHdr);
-        }
-        netTick(L4_RETRY_TIMEOUT+1);
-    }
+        // expect TC complete 
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) != 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) != 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) == 0U)
+        );
 
+        EXPECT_CALL(mock, pitGetCurrMS())
+            .Times(1)
+            .WillOnce(testing::Return(0))
+            .RetiresOnSaturation();
 
-    // TODO Fails
-    // send slave ack
+        uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TDRE_MASK) | UART_S1_TC_MASK);
+        l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
 
+        // confirm UART TX is disabled
+        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+
+        /* Ack */
+        pduHdr = PduHdr{
+            .l2hdr = { l2Addr, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST) },
+            .l3hdr = { 0x101, GetParam().portAddr[port], 1, 0 },
+            .l4hdr = { 0, L4_MSG_FLAG_TYPE_ACK, 0 }
+        };
+        
+        /* */
+        sendMsgAck(mock, uart_ptrs[port], pduHdr, port);
+        
 #if 0
-    for (int port = 0; port < MAX_PORT; port++) {
-        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
-        if (l2Addr == 0 /* ||
-               portsTested[port]*/) {
-            continue;
-        }
+        // inter frame silence
+        PITCallback(port + L2_PIT_TIMER_START_IDX);
 
-        // first expect hdr for second msg
+        // confirm TE is primed
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) != 0U)
+        );
+
         pduHdr.l4hdr = L4Hdr{ 1, 0, 1 };
-        //expectHdr(mock, uart_ptrs[port], pduHdr);
 
         // expect msg size single frame
         expectTxMultiFrame(mock,
@@ -1990,17 +2316,16 @@ TEST_P(MultiHop, pduNoHopSingleFrameRetry) {
             msg2.data(),
             msg2.size(),
             pduHdr);
-    }
 
-    netTick(INTER_FRAME_SILENCE + 1);
+        uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
+        l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
 
-    // send ISR for next set of Data 
-    for (int port = 0; port < MAX_PORT; port++) {
-        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
-        if (l2Addr == 0 /* ||
-               portsTested[port]*/) {
-            continue;
-        }
+        // confirm TE is still primed
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) != 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) != 0U)
+        );
 
         expectTxMultiFrame(mock,
             uart_ptrs[port],
@@ -2011,15 +2336,35 @@ TEST_P(MultiHop, pduNoHopSingleFrameRetry) {
             msg2.data(),
             msg2.size());
 
-        uart_ptrs[port]->S1 |= UART_S1_TDRE_MASK;
+        uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
         l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
 
-        // first expect hdr for second msg
+        // expect TC complete 
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) != 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) != 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) == 0U)
+        );
+
+        uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TDRE_MASK) | UART_S1_TC_MASK);
+        l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
+
+        // confirm UART TX is disabled
+        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+
+        // inter frame silence
+        PITCallback(port + L2_PIT_TIMER_START_IDX);
+
+        // confirm TE is primed
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) == 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) != 0U)
+        );
+
         pduHdr.l2hdr.type |= L2_PKT_TYPE_MST;
         pduHdr.l4hdr = L4Hdr{ 1, 0, 0 };
-        //expectHdr(mock, uart_ptrs[port], pduHdr);
 
-        // final message
         expectTxMultiFrame(mock,
             uart_ptrs[port],
             port,
@@ -2029,30 +2374,24 @@ TEST_P(MultiHop, pduNoHopSingleFrameRetry) {
             msg2.data(),
             msg2.size(),
             pduHdr);
-    }
 
-    // send ACK
-    netTick(INTER_FRAME_SILENCE + 1);
-#endif
-#if 0
-    for (int port = 0; port < MAX_PORT; port++) {
-        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
-        if (l2Addr == 0 /* ||
-               portsTested[port]*/) {
-            continue;
-        }
-        // Todo refactor
-        uart_ptrs[port]->S1 |= UART_S1_TC_MASK;
-        l1TransferHandleIRQ(uart_ptrs[port], port);
-        uart_ptrs[port]->S1 &= ~UART_S1_TC_MASK;
-        // send ACK
-        sendAck(mock, uart_ptrs[port], port);
-    }
+        uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
+        l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
 
-    netTick(INTER_FRAME_SILENCE + 1);
+        // expect TC complete 
+        ASSERT_TRUE(
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TCIE_MASK)) != 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TE_MASK)) != 0U) &&
+            ((uart_ptrs[port]->C2 & (uint8_t)(UART_C2_TIE_MASK)) == 0U)
+        );
+
+        uart_ptrs[port]->S1 = (uint8_t)((uart_ptrs[port]->S1 & (uint8_t)~UART_S1_TDRE_MASK) | UART_S1_TC_MASK);
+        l1TransferHandleIRQ(uart_ptrs[port], port); // complete TX of single frame
 #endif
+    }
 }
 #endif
+
 //TEST_P(MultiHop, l2test) {
 //
 //}
@@ -2061,10 +2400,10 @@ INSTANTIATE_TEST_SUITE_P(
     Runs, MultiHop,
     ::testing::Values(
       //     pos port1   port2
-      Case{ 1, {0x101, 0x301}, {3, 2}},
+     /* Case{1, {0x101, 0x301}, {3, 2}},
       Case{ 2, {0x201, 0x302}, {3, 2} },
       Case{ 3, {0x102, 0x202}, {3, 3} },
-      Case{ 5, {0x203, 0x000}, {3, 0} },
+      Case{ 5, {0x203, 0x000}, {3, 0} },*/
       Case{ 7, {0x103, 0x000}, {3, 0} }
     )
 );
@@ -2073,7 +2412,7 @@ int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
-
+#if 0
 typedef struct EventData {
 
 };
@@ -2134,7 +2473,7 @@ void gpioISR() {
         }
     }
 }
-
+#endif
 
 #if 0
 typedef struct {

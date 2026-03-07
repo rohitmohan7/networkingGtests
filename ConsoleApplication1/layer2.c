@@ -56,11 +56,6 @@ void mstTmOut(uint8_t pitChnl) {
 	l2SendMsg(port);
 }
 
-void mstPassTmOut(uint8_t pitChnl) {
-	uint8_t port = pitChnl - L2_PIT_TIMER_START_IDX;
-	l2SendMsg(port);
-}
-
 void l2Init() {
 	memset(mst_token, 0, sizeof mst_token);
 	memset(l2TxPktDesc, 0x0, sizeof l2TxPktDesc);
@@ -144,7 +139,9 @@ void l2TxCmplt(uint8_t port) {
 	// prime for next msg
 	//l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
 	if (l2TxPktDesc[port].l2TxPkt.hdr.type & L2_PKT_TYPE_MST) {
-		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((LINE_SILENT / 2), BUS_CLK_HZ), &mstPassTmOut);
+		// loose token
+		mst_token[port] = false;
+		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((LINE_SILENT / 2), BUS_CLK_HZ), &mstTmOut);
 	}
 	else {
 		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((INTER_FRAME_SILENCE + INTER_FRAME_SILENCE_JITTER), BUS_CLK_HZ), &interFrmeSlnce); // give some threshold to account for slave jitter
@@ -274,6 +271,14 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 		*ptr = ((uint8_t*)&l2RxPktDesc[port].l2RxPkt.crc);
 		len = sizeof(l2Crc);
 		return len;
+	case L2_PKT_TYPE_PDU:
+
+		if (idx < sizeof(PduHdr)) {
+			*ptr = ((uint8_t*)&l2RxPktDesc[port].l2RxPkt.hdr) + sizeof(L2Hdr)  + idx;
+			len = sizeof(PduHdr) - sizeof(L2Hdr);
+		}
+
+		return len;
 	default:
 		return len;
 	}
@@ -287,60 +292,3 @@ void l2SendPdu(uint8_t port, bool mstPass, uint8_t addr) {
 	l2TxPktDesc[port].l2TxPkt.crc = 0xFF; // TODO
 	l1StartTx(port);
 }
-
-#if 0
-void l2Tick() { // ms is milliseconds since last tick 
-	for (int port = 0; port < MAX_PORT; port++) {
-		if (maxL2Addr[port] <= 1) { // only single device in port consider dead
-			continue;
-		}
-
-#if 0
-		// increment rx timer
-		if (txActive[port]) {
-			l2TmLstRx[port] = 0;
-		}
-		else {
-			l2TmLstRx[port] += ms;
-		}
-#endif
-
-		if (l2TmLstRx[port] > (((uint8_t)port_addr[port]) * LINE_SILENT)) {
-			mst_token[port] = true;
-		}
-
-		if (l2TmLstRx[port] > INTER_FRAME_SILENCE) {
-			l2CmtRx(port);
-			if (mst_token[port]) {
-				if (l2TxPktDesc[port].l2TxPkt.hdr.type == L2_PKT_TYPE_INVALID) {// pas MST token immediatly no packet to send
-					// first request pkt from l3
-					bool passMST;
-					uint8_t l2Addr;
-					if (getl3Pkt(port, &l2TxPktDesc[port].l2TxPkt.msg.pdu, &passMST, &l2Addr)) {
-						l2SendPdu(port, passMST, l2Addr);
-					}
-					else {
-						l2SendMst(port, getNxtMst(port, port_addr[port]));
-					}
-				}
-				else if (l2TxPktDesc[port].l2TxPkt.hdr.type == L2_PKT_TYPE_MST &&
-					l2TmLstRx[port] > (LINE_SILENT / 2)) {
-					l2SendMst(port, l2TxPktDesc[port].l2TxPkt.msg.mst.nextMst);
-				}
-			}
-#if 0
-			if (l2TxPktDesc[port].l2TxPkt.hdr.type != L2_PKT_TYPE_INVALID &&
-				l2TxPktDesc[port].time == 0xFF) {
-				l2TmLstRx[port] = 0; // zero rx timer
-				l1StartTx(port);
-			}
-#endif
-		}
-	}
-}
-#endif
-#if 0
-void l2Send(L3Packet packet, uint8_t addr) {
-
-}
-#endif

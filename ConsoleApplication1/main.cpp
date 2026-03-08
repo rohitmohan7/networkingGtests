@@ -1715,7 +1715,9 @@ void expectTxMultiFrame(MockUart& mock,
     if (echo) {
         sizeIn = size;
         idxIn = idx;
-        if ((msgSize - idx) >= UART_FIFO_SIZE) {
+        if (!(idx % L4_FRAME_SIZE) || (msgSize - idx) < UART_FIFO_SIZE) {
+            // tx complete
+        } else {
             expectTxMultiFrame(mock,
                 UART,
                 port,
@@ -1726,12 +1728,17 @@ void expectTxMultiFrame(MockUart& mock,
                 msgSize,
                 hdr);
         }
+#if 0
+        else if ((msgSize - idx) > 0) {
+
+        }
+#endif
     }
     else {
         UART->S1 = (uint8_t)((UART->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
         l1TransferHandleIRQ(UART, port); // complete TX of single frame
 
-        if ((msgSize - idx) < UART_FIFO_SIZE) {
+        if (!(idx % L4_FRAME_SIZE) || (msgSize - idx) < UART_FIFO_SIZE) {
             // expect TC complete 
             ASSERT_TRUE(
                 ((UART->C2 & (uint8_t)(UART_C2_TCIE_MASK)) != 0U) &&

@@ -48,7 +48,7 @@ uint8_t getL4PktHd(L4Pkt* l4Pkt, uint8_t prio, uint8_t* offset) {
 		uint8_t pgTxBytes = min(txBytes, pgBytes);
 
 		if (txBytes > pgTxBytes) { // advance to next page
-			currHd = g_next[s->head_page];
+			currHd = g_next[currHd];
 			currOfst = 0;
 		} else {
 			// just advance offset
@@ -67,10 +67,12 @@ uint8_t getL4PktHd(L4Pkt* l4Pkt, uint8_t prio, uint8_t* offset) {
 
 void setL4Hdr(L4Pkt* l4Pkt, uint8_t prio) {
 	L4Hdr* l4PktHdr = &l4Pkt->hdr;
-	L4Hdr* txHdr = &streams[l4Pkt->pos][prio].txMsgHdr;
+	stream_t* ps = &streams[l4Pkt->pos][prio];
+	L4Hdr* txHdr = &ps->txMsgHdr;
 	l4PktHdr->msgNo = txHdr->msgNo;
-	l4PktHdr->msgFlgs = (txHdr->msgFlgs & ~(L4_MSG_FLAG_STREAM_PENDING | L4_MSG_FLAG_PENDING_ACK)); // unset internal flags
-	l4PktHdr->msgLen = (txHdr->msgLen > L4_FRAME_SIZE) ? (txHdr->msgLen - L4_FRAME_SIZE) : 0; // remaining msg len
+	l4PktHdr->msgFlgs = (txHdr->msgFlgs & ~(L4_MSG_FLAG_STREAM_PENDING | L4_MSG_FLAG_PENDING_ACK)); // unset internal flag
+	l4PktHdr->msgLen = ((txHdr->msgLen - (ps->txFrameCnt * L4_FRAME_SIZE)) > L4_FRAME_SIZE) ? 
+		((txHdr->msgLen - (ps->txFrameCnt * L4_FRAME_SIZE)) - L4_FRAME_SIZE) : 0; // remaining msg len
 }
 
 void getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t* len, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen, uint8_t prio) {
@@ -88,7 +90,7 @@ void getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t* len, uint8_t* txHd, uint
 	
 	// cap tx len to min of msg len/Frame size
 	*len = min((UNIT - (*txHdOfst)), 
-			min((s->txMsgHdr.msgLen - prioTxCnt), (L4_FRAME_SIZE - prioTxCnt)));
+			min((s->txMsgHdr.msgLen - prioTxCnt), (L4_FRAME_SIZE - (prioTxCnt % L4_FRAME_SIZE))));
 #if 0
 	if ((*txHd) == s->tail_page) {
 		*len -= (UNIT - s->tail_used);
@@ -207,12 +209,12 @@ void l4TxCmplt(L4Pkt* l4Pkt, uint8_t prio) {
 		 clearMsgFrame(l4Pkt, prio, false);
 	 } else {
 		 stream_t* s = &streams[l4Pkt->pos][prio];
+		 if (l4lstMsgFrm(l4Pkt->pos, prio)) {
+			 s->txMsgHdr.msgFlgs |= L4_MSG_FLAG_PENDING_ACK;
+			 //set the timer
+			 s->retryTmr = pitGetCurrMS();
+		 }
 		 s->txFrameCnt++;
-		if (l4lstMsgFrm(l4Pkt->pos, prio)) {
-			s->txMsgHdr.msgFlgs |= L4_MSG_FLAG_PENDING_ACK;
-			//set the timer
-			s->retryTmr = pitGetCurrMS();
-		}
 	 }
 }
 

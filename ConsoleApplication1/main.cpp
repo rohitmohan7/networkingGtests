@@ -1635,6 +1635,7 @@ void expectTxMultiFrame(MockUart& mock,
     const int& msgSize,
     const PduHdr& hdr = PduHdr(),
     const bool& mstAftLstFrame = false,
+    const uint32_t& milliSeconds = 0,
     const bool& echo = false) {
     uint8_t idx = idxIn;
     uint8_t size = sizeIn;
@@ -1689,6 +1690,13 @@ void expectTxMultiFrame(MockUart& mock,
                     }))
                 .RetiresOnSaturation();
 
+            if ((idx + size >= msgSize) && !(len) && (hdr.l4hdr.msgFlgs & L4_MSG_FLAG_REQ_ACK)) {
+                EXPECT_CALL(mock, pitGetCurrMS())
+                    .Times(1)
+                    .WillOnce(testing::Return(milliSeconds))
+                    .RetiresOnSaturation();
+            }
+
             UART->S1 |= UART_S1_RDRF_MASK;
             UART->RCFIFO = size;
 
@@ -1718,6 +1726,7 @@ void expectTxMultiFrame(MockUart& mock,
         sizeIn = size;
         idxIn = idx;
         if (!(idx % L4_FRAME_SIZE) || (msgSize - idx) < UART_FIFO_SIZE) {
+
             // tx complete check to send next frame
             if ((msgSize - idx) > 0) {
                 // inter frame silence
@@ -1738,7 +1747,8 @@ void expectTxMultiFrame(MockUart& mock,
                     msg,
                     msgSize,
                     hdrCpy,
-                    mstAftLstFrame);
+                    mstAftLstFrame,
+                    milliSeconds);
             }
         } else {
             expectTxMultiFrame(mock,
@@ -1750,7 +1760,8 @@ void expectTxMultiFrame(MockUart& mock,
                 msg,
                 msgSize,
                 hdr,
-                mstAftLstFrame);
+                mstAftLstFrame,
+                milliSeconds);
         }
     }
     else {
@@ -1790,6 +1801,7 @@ void expectTxMultiFrame(MockUart& mock,
             msgSize,
             hdr,
             mstAftLstFrame,
+            milliSeconds,
             true);
     }
 }
@@ -1965,6 +1977,124 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
 
 #define MAX_L4_RETRY 3
 #define L4_RETRY_TIMER 100 // 100 ms
+
+TEST_P(MultiHop, pduNoHopSingleFrameRetryNoAck) {
+    MockUart mock;
+    g_mock = &mock;
+    testing::InSequence seq;
+    // construct message
+    static const int MSG_SIZE = 100;
+    std::array<uint8_t, MSG_SIZE> msg;
+    for (int i = 0; i < MSG_SIZE; i++) {
+        msg[i] = i;
+    }
+
+    static const int MSG2_SIZE = L4_FRAME_SIZE + 1;
+    std::array<uint8_t, MSG2_SIZE> msg2;
+    for (int i = 0; i < MSG2_SIZE; i++) { // send multiframe msg
+        msg2[i] = i;
+    }
+    uint8_t size;
+    PduHdr pduHdr{};
+
+    uint8_t idx[MAX_PORT];
+    uint32_t milliSeconds = 0;
+
+    for (int port = 0; port < MAX_PORT; port++) {
+
+        // confirm UART TX is disabled
+        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+
+        uint8_t l2Addr = GetParam().portAddr[port] & 0x00FF;
+        if (l2Addr == 0 /* ||
+               portsTested[port]*/) {
+            continue;
+        }
+
+        // confirm RX is enabled
+        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
+
+        // send msg
+        appSend(msg.data(), MSG_SIZE, 1, 0, true);
+        appSend(msg2.data(), MSG2_SIZE, 1, 0, true);
+
+        // send MST
+        sendMstToken(mock, uart_ptrs[port], l2Addr, port);
+
+        // will send message
+
+        // first expect hdr
+        pduHdr = PduHdr{
+            .l2hdr = { 0x1, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST), 0xFF },
+            .l3hdr = { GetParam().portAddr[port], 0x101, 1, 0 },
+            .l4hdr = { 0, L4_MSG_FLAG_REQ_ACK, 0 }
+        };
+
+        uint8_t sizePrev = size;
+        uint8_t idxPrev = idx[port];
+
+        for (int retry = 0; retry <= MAX_L4_RETRY; retry++) {
+            expectTxMultiFrame(mock,
+                uart_ptrs[port],
+                port,
+                idx[port],
+                size,
+                TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
+                msg.data(),
+                msg.size(),
+                pduHdr,
+                true,
+                milliSeconds);
+
+            // mst timeout silence
+            milliSeconds += L4_RETRY_TIMER + 1;
+
+            EXPECT_CALL(mock, pitGetCurrMS())
+                .Times(1)
+                .WillOnce(testing::Return(milliSeconds))
+                .RetiresOnSaturation();
+
+            PITCallback(port + L2_PIT_TIMER_START_IDX);
+
+            if (retry < MAX_L4_RETRY) {
+                size = sizePrev;
+                idx[port] = idxPrev;
+            }
+        }
+        sizePrev = size;
+        idxPrev = idx[port];
+        pduHdr.l2hdr.type &= ~L2_PKT_TYPE_MST; // will be set on last frame of message
+        pduHdr.l4hdr = L4Hdr{ 1, L4_MSG_FLAG_REQ_ACK, 1 };
+        // message is dropped and move to next message
+        for (int retry = 0; retry <= MAX_L4_RETRY; retry++) {
+            // expect msg size single frame
+            expectTxMultiFrame(mock,
+                uart_ptrs[port],
+                port,
+                idx[port],
+                size,
+                TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG,
+                msg2.data(),
+                msg2.size(),
+                pduHdr,
+                true,
+                milliSeconds);
+
+            // mst timeout silence
+            milliSeconds += L4_RETRY_TIMER + 1;
+
+            EXPECT_CALL(mock, pitGetCurrMS())
+                .Times(1)
+                .WillOnce(testing::Return(milliSeconds))
+                .RetiresOnSaturation();
+
+            PITCallback(port + L2_PIT_TIMER_START_IDX); // mst timeout
+
+            size = sizePrev;
+            idx[port] = idxPrev;
+        }
+    }
+}
 
 #if 0
 TEST_P(MultiHop, pduNoHopSingleFrameRetryNoAck) {

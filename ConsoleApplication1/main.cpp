@@ -1634,9 +1634,11 @@ void expectTxMultiFrame(MockUart& mock,
     const uint8_t* msg,
     const int& msgSize,
     const PduHdr& hdr = PduHdr(),
+    const bool& mstAftLstFrame = false,
     const bool& echo = false) {
     uint8_t idx = idxIn;
     uint8_t size = sizeIn;
+
     if (type == TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG) {
         size = 0;
     }
@@ -1716,7 +1718,28 @@ void expectTxMultiFrame(MockUart& mock,
         sizeIn = size;
         idxIn = idx;
         if (!(idx % L4_FRAME_SIZE) || (msgSize - idx) < UART_FIFO_SIZE) {
-            // tx complete
+            // tx complete check to send next frame
+            if ((msgSize - idx) > 0) {
+                // inter frame silence
+                PITCallback(port + L2_PIT_TIMER_START_IDX);
+
+                PduHdr hdrCpy = hdr;
+                if ((msgSize - idx) <= L4_FRAME_SIZE) {
+                    hdrCpy.l2hdr.type |= L2_PKT_TYPE_MST;
+                }
+                hdrCpy.l4hdr.msgLen = (msgSize - idx) > L4_FRAME_SIZE? (msgSize - idx) - L4_FRAME_SIZE: 0;
+
+                expectTxMultiFrame(mock,
+                    UART,
+                    port,
+                    idxIn,
+                    sizeIn,
+                    TxMultiFrameType::TX_MULTI_FRAME_NEW_FRAME,
+                    msg,
+                    msgSize,
+                    hdrCpy,
+                    mstAftLstFrame);
+            }
         } else {
             expectTxMultiFrame(mock,
                 UART,
@@ -1726,13 +1749,9 @@ void expectTxMultiFrame(MockUart& mock,
                 TxMultiFrameType::TX_MULTI_FRAME_CONT,
                 msg,
                 msgSize,
-                hdr);
+                hdr,
+                mstAftLstFrame);
         }
-#if 0
-        else if ((msgSize - idx) > 0) {
-
-        }
-#endif
     }
     else {
         UART->S1 = (uint8_t)((UART->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
@@ -1770,6 +1789,7 @@ void expectTxMultiFrame(MockUart& mock,
             msg,
             msgSize,
             hdr,
+            mstAftLstFrame,
             true);
     }
 }
@@ -1937,23 +1957,8 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
             TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG,
             msg2.data(),
             msg2.size(),
-            pduHdr);
-
-        // inter frame silence
-        PITCallback(port + L2_PIT_TIMER_START_IDX);
-
-        pduHdr.l2hdr.type |= L2_PKT_TYPE_MST;
-        pduHdr.l4hdr = L4Hdr{ 1, 0, 0 };
-
-        expectTxMultiFrame(mock,
-            uart_ptrs[port],
-            port,
-            idx[port],
-            size,
-            TxMultiFrameType::TX_MULTI_FRAME_NEW_FRAME,
-            msg2.data(),
-            msg2.size(),
-            pduHdr);
+            pduHdr,
+            true);
     }
 }
 //#endif

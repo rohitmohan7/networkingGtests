@@ -5,7 +5,7 @@
 #include "network.h"
 #include "pit.h"
 
-#define L2_FRAME_SIZE (RS485_FRAME_SIZE - (sizeof(L2Hdr) + sizeof(((L2Pkt*)0)->crc)))
+#define L2_FRAME_SIZE (RS485_FRAME_SIZE - sizeof(L2Hdr))
 #define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
 #define L4_FRAME_SIZE (L3_FRAME_SIZE - sizeof(L4Hdr))
 

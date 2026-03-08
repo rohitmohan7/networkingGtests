@@ -34,7 +34,7 @@ uint8_t getNxtMst(uint8_t port, uint8_t addr) {
 void l2SendMst(uint8_t port, uint8_t addr) {
 	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_MST;
-	l2TxPktDesc[port].l2TxPkt.msg.mst.mstCrc = 0xFF; //TODO
+	l2TxPktDesc[port].l2TxPkt.hdr.crc = 0xFF; //TODO
 	l1StartTx(port);
 }
 
@@ -91,7 +91,7 @@ void l2CmtRx(port) {
 
 	l2RxPktDesc[port].l2RxPkt.hdr.type = L2_PKT_TYPE_INVALID; // invalidate msg for future
 
-	bool crcValid = l2RxPktDesc[port].l2RxPkt.crc == 0xFF;
+	bool crcValid = l2RxPktDesc[port].l2RxPkt.hdr.crc == 0xFF;
 	// validate CRC TODO
 	if (!crcValid) { // silently drop
 		return;
@@ -156,61 +156,41 @@ static inline void l2AbortTx(uint8_t port) {
 
 }*/
 
-bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8_t txRxFifoLen, uint8_t xfer) {
+bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8_t txRxFifoLen, const L2XferDir_t xfer) {
 
-	static uint8_t tx_pdu_head[MAX_PORT];
-	static uint8_t tx_pdu_hd_off[MAX_PORT];
-	static uint8_t* ptrEcho[MAX_PORT];
-	static uint8_t lenEcho[MAX_PORT];
+	static uint8_t tx_pdu_head[L2_XFER_SIZE][MAX_PORT]; // TBD can it be moved to L4?
+	static uint8_t tx_pdu_hd_off[L2_XFER_SIZE][MAX_PORT];
+
 	uint8_t type = getPktType(&l2TxPktDesc[port].l2TxPkt);
 
-	if (xfer == XFER_RX_ECHO) {
-		*ptr = ptrEcho[port];
-		*len = lenEcho[port];
-
-		if ((type != L2_PKT_TYPE_PDU) || ptrEcho == &l2TxPktDesc[port].l2TxPkt.crc) { // if this is CRC we are at the end
-			return true;
-		}
-		return false; // how to determine complete ?
-	}
-
 	if (idx < sizeof(L2Hdr)) { // give header
-		*ptr = ptrEcho[port] = ((uint8_t*)&l2TxPktDesc[port].l2TxPkt.hdr) + idx;
-		*len = lenEcho[port] = sizeof(L2Hdr) - idx;
+		*ptr = ((uint8_t*)&l2TxPktDesc[port].l2TxPkt.hdr) + idx;
+		*len = sizeof(L2Hdr) - idx;
 	}
 
 	switch (type) {
 	case L2_PKT_TYPE_MST:
-		// next is CRC
-		lenEcho[port] = *len += sizeof(l2Crc);
+		// pkt has only hdr
 		return true;
 	case L2_PKT_TYPE_PDU:
 		L3Pkt* l3Pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu;
 		if (idx < sizeof(PduHdr)) {
-			*len = lenEcho[port] = sizeof(PduHdr) - idx;
+			*len = sizeof(PduHdr) - idx;
 
-			tx_pdu_head[port] = getL3PktHd(l3Pkt, &tx_pdu_hd_off[port]);
-			//tx_pdu_head[xfer][port] = ps->head_page;
-			//tx_pdu_hd_off[xfer][port] = ps->head_off;
+			tx_pdu_head[xfer][port] = getL3PktHd(l3Pkt, &tx_pdu_hd_off[xfer][port]);
 			return false;
 		}
 		else {
 
-			if (tx_pdu_head[port] == INVALID_PAGE) { // tx complete give crc
-				*ptr = ptrEcho[port] = &l2TxPktDesc[port].l2TxPkt.crc;
-				*len = lenEcho[port] = sizeof(l2Crc);
-				return true;
-			}
-
 			getL3PktFrag(&l2TxPktDesc[port].l2TxPkt.msg.pdu, 
 						  ptr, len, 
-						 &tx_pdu_head[port],
-						 &tx_pdu_hd_off[port],
+						 &tx_pdu_head[xfer][port],
+						 &tx_pdu_hd_off[xfer][port],
 						 txRxFifoLen);
 
-			// prime it for echo
-			ptrEcho[port] = *ptr;
-			lenEcho[port] = *len;
+			if (tx_pdu_head[xfer][port] == INVALID_PAGE) {
+				return true;
+			}
 		}
 	}
 
@@ -261,16 +241,6 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 
 	// at this point confirmed message is for this device
 	switch (type) {
-	case L2_PKT_TYPE_MST:
-
-		if (idx + rxLen > (sizeof(L2Hdr) + sizeof(l2Crc))) {
-			return len;
-		}
-
-		// next is CRC
-		*ptr = ((uint8_t*)&l2RxPktDesc[port].l2RxPkt.crc);
-		len = sizeof(l2Crc);
-		return len;
 	case L2_PKT_TYPE_PDU:
 
 		if (idx < sizeof(PduHdr)) {
@@ -279,8 +249,9 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 		}
 
 		return len;
+	case L2_PKT_TYPE_MST:// this packet should only have header
 	default:
-		return len;
+		return 0;
 	}
 	
 	//return len;
@@ -289,6 +260,6 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 void l2SendPdu(uint8_t port, bool mstPass, uint8_t addr) {
 	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_PDU | (mstPass? L2_PKT_TYPE_MST: 0);
-	l2TxPktDesc[port].l2TxPkt.crc = 0xFF; // TODO
+	l2TxPktDesc[port].l2TxPkt.hdr.crc = 0xFF; // TODO
 	l1StartTx(port);
 }

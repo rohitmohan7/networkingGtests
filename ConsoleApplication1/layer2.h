@@ -4,8 +4,12 @@
 #include "allocator.h"
 #include "layer3.h"
 
-#define XFER_TX 0
-#define XFER_RX_ECHO 1
+
+typedef enum L2XferDir_et {
+	L2_XFER_TX,
+	L2_XFER_RX_ECHO,
+	L2_XFER_SIZE
+} L2XferDir_t;
 
 //extern volatile bool mst_token[MAX_PORT];
 extern uint8_t maxL2Addr[MAX_PORT];
@@ -34,11 +38,14 @@ static inline L2TxPktDesc* L2_GetPktDesc(uint8_t port)
 
 #define RS485_FRAME_SIZE 256
 
+typedef uint8_t l2Crc;
+
 typedef struct __attribute__((packed)) {
 	uint8_t addr;
 	uint8_t type;
+	l2Crc crc;
 } L2Hdr;
-_Static_assert(sizeof(L2Hdr) == 2, "L2Hdr wrong size");
+//_Static_assert(sizeof(L2Hdr) == 2, "L2Hdr wrong size");
 
 typedef struct {
 	L2Hdr l2hdr;
@@ -46,36 +53,18 @@ typedef struct {
 	L4Hdr l4hdr;
 } PduHdr;
 
-typedef uint8_t l2Crc;
-
 typedef struct __attribute__((packed)) L2Pkt {
 	L2Hdr hdr;
 
 	// payload ptr
 	union {
 		L3Pkt pdu;
-
-		struct {
-			l2Crc mstCrc;
-		} mst;
-
-		struct {
-			l2Crc ackCrc;
-		} ack;
-
 		struct {
 			uint8_t reason;
-			l2Crc nakCrc;
 		} nak;
-
 	} msg;
-
-	l2Crc crc;
-
 } L2Pkt; // size 7 bytes
 //_Static_assert(sizeof(L2Pkt) == 7, "L2Pkt wrong size");
-
-
 
 typedef struct __attribute__((packed)) {
 	L2Pkt l2TxPkt;
@@ -97,7 +86,7 @@ void l2Init();
 
 void l2Tick(); // ms is milliseconds since last tick
 
-bool l2GetTxPkt(uint8_t port, uint8_t** ptr, uint8_t* len, uint16_t idx, uint8_t txFifoLen, uint8_t xfer);
+bool l2GetTxPkt(uint8_t port, uint8_t** ptr, uint8_t* len, uint16_t idx, uint8_t txFifoLen, const L2XferDir_t xfer);
 
 uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx);
 

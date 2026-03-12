@@ -24,7 +24,13 @@ void setPortAddr() {
     uint8_t busLoad[MAX_SUBNET];
     memset(busLoad, 0, MAX_SUBNET);
 
-    memset(l3AddrTableTest, (MAX_POS * MAX_PORT));
+    memset(l3AddrTableTest, 0, (MAX_POS * MAX_PORT));
+    uint8_t subnetHop[MAX_SUBNET];
+    memset(subnetHop, 0xFF, MAX_SUBNET);
+
+    for (uint8_t port = 0; port < MAX_PORT; port++) {
+        subnetHop[topology[myPos].subnet[port]] = 0;
+    }
 
     for (int pos = 0; pos < MAX_POS; pos++) {
         if (pos == myPos) {

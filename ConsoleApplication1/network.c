@@ -11,6 +11,7 @@ uint16_t port_addr[MAX_PORT]; // L3 & L2
 uint16_t myPos;
 NodeCfg topology[MAX_POS];
 
+uint16_t l3AddrTableTest[MAX_POS][MAX_PORT];
 //void scheduler();
 
 void setPortAddr() {
@@ -19,6 +20,11 @@ void setPortAddr() {
         (topology[myPos].subnet[0] == 0) ? 0 : 1, 
         (topology[myPos].subnet[1] == 0) ? 0 : 1 
     };
+
+    uint8_t busLoad[MAX_SUBNET];
+    memset(busLoad, 0, MAX_SUBNET);
+
+    memset(l3AddrTableTest, (MAX_POS * MAX_PORT));
 
     for (int pos = 0; pos < MAX_POS; pos++) {
         if (pos == myPos) {
@@ -33,6 +39,7 @@ void setPortAddr() {
                     continue;
                 }
 
+                bool reachableOnBothSubnets = false;
                 for (int peerPort = 0; peerPort < MAX_PORT; peerPort++) {
                     if (topology[pos].subnet[peerPort] == topology[myPos].subnet[port]) {
                         // for now set addr directly (TODO loadbalance equal hops + routing table gateway)

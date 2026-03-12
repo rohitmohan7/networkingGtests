@@ -1,4 +1,4 @@
-﻿#include "global.h"
+﻿
 #include "layer1.h"
 #include "layer2.h"
 #include "network.h"
@@ -117,7 +117,7 @@ static void l1UARTReadNonBlocking(UART_Type* UARTptr, uint8_t* data, size_t leng
 #endif
 
 
-bool l1Rx(UART_Type* UARTptr, uint8_t port) {
+static inline bool l1Rx(const UART_Type* const UARTptr, uint8_t port) {
 	// Tx from layer 2 packets
 	uint8_t  rxLen = UARTptr->RCFIFO;
 	do {
@@ -162,7 +162,7 @@ void l1Tx(UART_Type* UARTptr, uint8_t port) {
 bool validateTxEcho(UART_Type* UARTptr, uint8_t port, uint8_t count) {
 	bool txCmplt;
 	do { //  write contigeous buffers into fifo
-		uint8_t* ptr;
+		uint8_t* ptr = NULL;
 		uint8_t  len;
 
 		txCmplt = l2GetTxPkt(port, &ptr, &len, rxIndex[port], count, L2_XFER_RX_ECHO); // return remaining len
@@ -187,7 +187,7 @@ void l1RxCmplt(uint8_t port) {
 	rxIndex[port] = 0;
 }
 
-void l1TransferHandleIRQ(UART_Type* UARTptr, uint8_t port) {
+void l1TransferHandleIRQ(const UART_Type* const UARTptr, uint8_t port) {
 	uint8_t status = UARTptr->S1;
 	uint8_t cntrl = UARTptr->C2;
 	

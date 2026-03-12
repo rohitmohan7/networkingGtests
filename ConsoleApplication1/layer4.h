@@ -1,6 +1,8 @@
 ﻿#ifndef L4_NETWORK
 #define L4_NETWORK
-#include "global.h"
+#include <stdint.h>
+#include <stdbool.h>
+#include "network.h"
 
 #define MAX_PRIORITY 3
 
@@ -46,16 +48,25 @@ typedef struct stream_t
 
 typedef struct {
     L4Hdr txMsgHdr;
+    L4Hdr rxMsgHdr;
+
     TxOrderType txOrder;
+    uint8_t txFrameCnt;
 
     uint8_t head_page;
     uint8_t tail_page;
     uint8_t  head_off;       /* 0..UNIT-1 */
     uint8_t  tail_used;
+    
+    // to do use array ?
+    uint8_t rxHdPg; // rx head page
+    uint8_t rxTlPg; // rx tail page
+    uint8_t rxHdOfst; // rx head ofst
+    uint8_t rxTlUsed; // rx tail ofst
 
     uint8_t retryCnt;
     uint32_t retryTmr;
-    uint8_t txFrameCnt;
+    
 } stream_t;
 
 typedef struct __attribute__((packed)) {
@@ -81,9 +92,11 @@ bool l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr);
 
 void l4TxCmplt(L4Pkt* l4Pkt, uint8_t prio);
 
-void getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t* len, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen, uint8_t prio);
+uint8_t getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t idx, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen, uint8_t prio);
 
-uint8_t getL4PktHd(L4Pkt* l4Pkt, uint8_t prio, uint8_t* offset);
+uint8_t getL4RxPktFrag(L4Pkt *l4Pkt, uint8_t **ptr, uint8_t idx, uint8_t rxLen, uint8_t prio);
+
+bool getL4PktHd(L4Pkt *l4Pkt, uint8_t prio, uint8_t *hd, uint8_t *offset);
 
 bool l4StrmPnding(uint8_t pos, uint8_t prio);
 
@@ -92,4 +105,10 @@ bool l4lstMsgFrm(uint16_t pos, uint8_t prio);
 void l4Init();
 
 void l4Tick(uint8_t ms);
+
+void l4CmtRx(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio);
+
+bool l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio);
+
+void writeValToPage(stream_t *s, uint8_t *val, uint8_t len);
 #endif

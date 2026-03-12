@@ -1,4 +1,5 @@
 ﻿#include "network.h"
+#include "layer1.h"
 #include "layer2.h"
 #include "pit.h"
 
@@ -31,10 +32,18 @@ uint8_t getNxtMst(uint8_t port, uint8_t addr) {
 	return next;
 }
 
-void l2SendMst(uint8_t port, uint8_t addr) {
+static inline void l2SendMst(uint8_t port, uint8_t addr) {
 	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_MST;
 	l2TxPktDesc[port].l2TxPkt.hdr.crc = 0xFF; //TODO
+	l1StartTx(port);
+}
+
+static inline void l2SendPdu(uint8_t port, bool mstPass, uint8_t addr)
+{
+	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr; // Best way to find next table in line ?
+	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_PDU | (mstPass ? L2_PKT_TYPE_MST : 0);
+	l2TxPktDesc[port].l2TxPkt.hdr.crc = 0xFF; // TODO
 	l1StartTx(port);
 }
 
@@ -64,7 +73,7 @@ void l2Init() {
 	for (int port = 0; port < MAX_PORT; port++) {
 		l2RxPktDesc[port].abort = false;
 		if (port_addr[port] > 0) {
-			PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(SILENT_TIMER, BUS_CLK_HZ), &mstTmOut);
+			pitEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(SILENT_TIMER, BUS_CLK_HZ), &mstTmOut);
 		}
 	}
 }
@@ -89,8 +98,6 @@ void l2CmtRx(port) {
 		return;
 	}
 
-	l2RxPktDesc[port].l2RxPkt.hdr.type = L2_PKT_TYPE_INVALID; // invalidate msg for future
-
 	bool crcValid = l2RxPktDesc[port].l2RxPkt.hdr.crc == 0xFF;
 	// validate CRC TODO
 	if (!crcValid) { // silently drop
@@ -101,15 +108,19 @@ void l2CmtRx(port) {
 		mst_token[port] = true;
 	}
 	rxType = getPktType(&l2RxPktDesc[port].l2RxPkt);
+	l2RxPktDesc[port].l2RxPkt.hdr.type = L2_PKT_TYPE_INVALID; // invalidate msg for future
 
 	switch (rxType) { //TODO
+	case L2_PKT_TYPE_PDU:
+		l3CmtRx(&l2RxPktDesc[port].l2RxPkt.msg.pdu, port);
+		break;
 	default:
 		break;
 	}
 
 	if (!mst_token[port]) {
 		// wait for MST pass
-		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((SILENT_TIMER - INTER_FRAME_SILENCE), BUS_CLK_HZ), &mstTmOut);
+		pitEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((SILENT_TIMER - INTER_FRAME_SILENCE), BUS_CLK_HZ), &mstTmOut);
 	}
 	else {
 		l2SendMsg(port);
@@ -129,7 +140,7 @@ void interFrmeSlnce(uint8_t pitChnl) {
 void interChrSlnce(uint8_t pitChnl) {
 	uint8_t port = pitChnl - L2_PIT_TIMER_START_IDX;
 	l2RxPktDesc[port].abort = true; // abort future RX
-	PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((INTER_FRAME_SILENCE - INTER_CHAR_SILENCE), BUS_CLK_HZ), &interFrmeSlnce);
+	pitEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((INTER_FRAME_SILENCE - INTER_CHAR_SILENCE), BUS_CLK_HZ), &interFrmeSlnce);
 }
 
 void l2TxCmplt(uint8_t port) {
@@ -141,10 +152,10 @@ void l2TxCmplt(uint8_t port) {
 	if (l2TxPktDesc[port].l2TxPkt.hdr.type & L2_PKT_TYPE_MST) {
 		// loose token
 		mst_token[port] = false;
-		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((LINE_SILENT / 2), BUS_CLK_HZ), &mstTmOut);
+		pitEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((LINE_SILENT / 2), BUS_CLK_HZ), &mstTmOut);
 	}
 	else {
-		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((INTER_FRAME_SILENCE + INTER_FRAME_SILENCE_JITTER), BUS_CLK_HZ), &interFrmeSlnce); // give some threshold to account for slave jitter
+		pitEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT((INTER_FRAME_SILENCE + INTER_FRAME_SILENCE_JITTER), BUS_CLK_HZ), &interFrmeSlnce); // give some threshold to account for slave jitter
 	}
 }
 
@@ -175,20 +186,25 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 	case L2_PKT_TYPE_PDU:
 		L3Pkt* l3Pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu;
 		if (idx < sizeof(PduHdr)) {
-			*len = sizeof(PduHdr) - idx;
+			
+			if (!ptr) { // if ptr was not already set
+				*ptr = ((uint8_t *)&l2TxPktDesc[port].l2TxPkt.hdr) + idx;
+			}
+			
+			*len = sizeof(PduHdr) - idx; // reset length
 
-			tx_pdu_head[xfer][port] = getL3PktHd(l3Pkt, &tx_pdu_hd_off[xfer][port]);
-			return false;
+			return getL3PktHd(l3Pkt, &tx_pdu_head[xfer][port], &tx_pdu_hd_off[xfer][port]);
 		}
 		else {
 
-			getL3PktFrag(&l2TxPktDesc[port].l2TxPkt.msg.pdu, 
-						  ptr, len, 
-						 &tx_pdu_head[xfer][port],
-						 &tx_pdu_hd_off[xfer][port],
-						 txRxFifoLen);
+			*len = getL3PktFrag(&l2TxPktDesc[port].l2TxPkt.msg.pdu,
+								ptr, (idx - sizeof(PduHdr)),
+								&tx_pdu_head[xfer][port],
+								&tx_pdu_hd_off[xfer][port],
+								txRxFifoLen);
 
-			if (tx_pdu_head[xfer][port] == INVALID_PAGE) {
+			if (tx_pdu_head[xfer][port] == INVALID_PAGE)
+			{
 				return true;
 			}
 		}
@@ -199,9 +215,9 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 
 bool l2RxAborted(uint8_t port) {
 	if (l2RxPktDesc[port].abort) { // if aborted wait for next message
-		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(INTER_FRAME_SILENCE, BUS_CLK_HZ), &interFrmeSlnce);
+		pitEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(INTER_FRAME_SILENCE, BUS_CLK_HZ), &interFrmeSlnce);
 	} else {
-		PITEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(INTER_CHAR_SILENCE, BUS_CLK_HZ), &interChrSlnce);
+		pitEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(INTER_CHAR_SILENCE, BUS_CLK_HZ), &interChrSlnce);
 	}
 	return l2RxPktDesc[port].abort;
 }
@@ -244,8 +260,16 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 	case L2_PKT_TYPE_PDU:
 
 		if (idx < sizeof(PduHdr)) {
-			*ptr = ((uint8_t*)&l2RxPktDesc[port].l2RxPkt.hdr) + sizeof(L2Hdr)  + idx;
-			len = sizeof(PduHdr) - sizeof(L2Hdr);
+			*ptr = ((uint8_t *)&l2RxPktDesc[port].l2RxPkt.hdr) + idx;
+			len = sizeof(PduHdr) - idx;
+		} else { // todo
+			if (idx == sizeof(PduHdr)) { // we just got hdr identify and prime rx
+				if (!l3CmtRxHd(&l2RxPktDesc[port].l2RxPkt.msg.pdu, port)) {
+					return 0;
+				}
+			}
+
+			len = getL3RxPktFrag(&l2RxPktDesc[port].l2RxPkt.msg.pdu, ptr, idx, rxLen);
 		}
 
 		return len;
@@ -255,11 +279,4 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 	}
 	
 	//return len;
-}
-
-void l2SendPdu(uint8_t port, bool mstPass, uint8_t addr) {
-	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
-	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_PDU | (mstPass? L2_PKT_TYPE_MST: 0);
-	l2TxPktDesc[port].l2TxPkt.hdr.crc = 0xFF; // TODO
-	l1StartTx(port);
 }

@@ -7,6 +7,10 @@
 
 uint16_t port_addr[MAX_PORT]; // L3 & L2
 
+// TODO move to cfg
+uint16_t myPos;
+NodeCfg topology[MAX_POS];
+
 //void scheduler();
 
 void setPortAddr() {

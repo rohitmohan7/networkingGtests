@@ -105,6 +105,7 @@
       <AdditionalIncludeDirectories>/usr/local/include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <CppLanguageStandard>c++17</CppLanguageStandard>
       <AdditionalOptions>-DUNIT_TEST %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>MAX_PORT=2</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>

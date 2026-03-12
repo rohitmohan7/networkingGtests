@@ -1,10 +1,10 @@
-﻿#include "global.h"
+﻿#include <stdint.h>
 
 #define POOL_BYTES   (10240U) // 1K
 #define UNIT         (64U)    // 64 bytes
 #define NUM_PAGES    (POOL_BYTES / UNIT)
 
-#define INVALID_PAGE ((uint8_t)0xFFFFU)
+#define INVALID_PAGE ((uint8_t)0xFFU)
 extern uint8_t g_next[NUM_PAGES];
 extern uint8_t   g_pool[POOL_BYTES];
 extern uint8_t  g_free_count;

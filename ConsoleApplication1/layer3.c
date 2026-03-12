@@ -20,9 +20,10 @@ void l3TxCmplt(L3Pkt* l3Pkt) {
 	l4TxCmplt(&l3Pkt->l4Pkt, l3Hdr->prio);
 }
 
-uint8_t getL3PktHd(L3Pkt * l3Pkt, uint8_t * ofst) {
+bool getL3PktHd(L3Pkt *l3Pkt, uint8_t *hd, uint8_t *ofst)
+{
 	L3Hdr* l3Hdr = &l3Pkt->hdr;
-	return getL4PktHd(&l3Pkt->l4Pkt, l3Hdr->prio, ofst);
+	return getL4PktHd(&l3Pkt->l4Pkt, l3Hdr->prio, hd, ofst);
 }
 
 uint8_t setL3Hdr(L3Pkt * l3Pkt, uint8_t port, uint8_t prio, uint16_t pos) {
@@ -138,8 +139,54 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 	//return false;
 }
 
-void getL3PktFrag(L3Pkt* l3Pkt, uint8_t** ptr, uint8_t* len, uint8_t * txHd, uint8_t* txHdOfst, uint8_t txLen) {
+uint8_t getL3PktFrag(L3Pkt* l3Pkt, uint8_t** ptr, uint8_t idx, uint8_t * txHd, uint8_t* txHdOfst, uint8_t txLen) {
 	L3Hdr* l3Hdr = &l3Pkt->hdr;
 	// check here if its a forwarded pkt ?
-	getL4PktFrag(&l3Pkt->l4Pkt, ptr, len, txHd, txHdOfst, txLen, l3Hdr->prio);
+	return getL4PktFrag(&l3Pkt->l4Pkt, ptr, idx, txHd, txHdOfst, txLen, l3Hdr->prio);
+}
+
+uint8_t getL3RxPktFrag(L3Pkt *l3Pkt, uint8_t **ptr, uint8_t idx, uint8_t rxLen)
+{
+	L3Hdr *l3Hdr = &l3Pkt->hdr;
+	
+	// TODO forward
+	return getL4RxPktFrag(&l3Pkt->l4Pkt, ptr, idx, rxLen, l3Hdr->prio);
+}
+
+bool l3CmtRxHd(L3Pkt *l3Pkt, const uint8_t port) {
+	L3Hdr *l3Hdr = &l3Pkt->hdr;
+	if (l3Hdr->dst == port_addr[port]) {
+		for (uint16_t pos = 0; pos < MAX_POS; pos++) {
+			if (l3Hdr->src == l3AddrTable[pos])
+			{
+				return l4CmtRxHd(&l3Pkt->l4Pkt, pos, l3Hdr->prio);
+			}
+		}
+	} else { // TODO forward
+		
+	}
+	
+	return false;
+}
+
+void l3CmtRx(L3Pkt *l3Pkt, const uint8_t port)
+{
+	// check if message if for this device
+	const L3Hdr *l3Hdr = &l3Pkt->hdr;
+	if (!l3Hdr->ttl) {
+		return; // drop packet
+	}
+
+	if (l3Hdr->dst == port_addr[port])
+	{	
+		for (uint16_t pos = 0; pos < MAX_POS; pos++) {
+			if (l3Hdr->src == l3AddrTable[pos]) // TODO check other rx from other port
+			{
+				l4CmtRx(&l3Pkt->l4Pkt, pos, l3Hdr->prio);
+				break;
+			}
+		}
+	} else { // TODO forward packet
+		
+	}
 }

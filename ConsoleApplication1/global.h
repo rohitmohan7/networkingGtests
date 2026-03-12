@@ -15,7 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 
-
+#if 0
 #define MAX_POS 8
 #define MAX_PORT 2
 
@@ -26,6 +26,6 @@ typedef struct {
 } NodeCfg;
 
 extern NodeCfg topology[MAX_POS]; // topology from config
-
+#endif
 
 

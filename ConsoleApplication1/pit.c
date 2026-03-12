@@ -6,9 +6,11 @@ static uint32_t milliSeconds;
 static void (*mp_PITTimerCallback[4])(uint8_t);
 const int32_t SMC_NUM_PIT_TIMERS = 3;
 
+#if 0
 uint32_t pitGetCurrMS() {
 	return milliSeconds;
 }
+#endif
 
 void pitInit() {
     memset(mp_PITTimerCallback, 0, sizeof(mp_PITTimerCallback));
@@ -42,7 +44,7 @@ bool PITDisableTimer(int32_t timerNum)
     return true;
 }
 
-bool PITEnableTimerSingleShot(int32_t timerNum, uint32_t cnt, void(*p_callback)(uint8_t))
+bool pitEnableTimerSingleShot(int32_t timerNum, uint32_t cnt, void(*p_callback)(uint8_t))
 {
     //Check the count
     if ((timerNum >= SMC_NUM_PIT_TIMERS) || (timerNum < 0))

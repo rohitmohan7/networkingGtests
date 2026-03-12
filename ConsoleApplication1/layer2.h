@@ -1,6 +1,5 @@
 ﻿#ifndef  L2_NETWORK
 #define L2_NETWORK
-#include "global.h"
 #include "allocator.h"
 #include "layer3.h"
 

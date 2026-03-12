@@ -3,26 +3,6 @@
 #include "layer4.h"
 
 
-void writeValToPage(stream_t* s, uint8_t* val, uint8_t len) {
-    for (int size = 0; size < len; size++)
-    {
-        if (s->tail_used == UNIT) {
-            uint8_t p = page_alloc();
-            g_next[s->tail_page] = p;
-            s->tail_page = page_alloc();
-            g_pool[pageOff(s->tail_page)] = val[size];
-            s->tail_used = 1U;
-        }
-        else {
-            const uint32_t base = pageOff(s->tail_page) + (uint32_t)s->tail_used;
-            g_pool[base] = val[size];
-            s->tail_used++;
-        }
-    }
-    return true;
-}
-
-
 bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, bool retry)
 {
     if ((data == NULL) || (len == 0U)) { return false; }
@@ -107,4 +87,8 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, 
     }
     txOrder++;
     return true;
+}
+
+bool appRecv(uint16_t pos, uint8_t priority) { // TODO
+    
 }

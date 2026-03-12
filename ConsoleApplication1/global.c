@@ -1,10 +1,10 @@
 ﻿#include "global.h"
-
+#if 0
 uint16_t myPos;
 
 NodeCfg topology[MAX_POS];
 
-#if 0
+
 NodeCfg topology[MAX_POS] = {
     {},
     {1, 3},

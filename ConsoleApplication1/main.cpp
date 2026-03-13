@@ -1885,7 +1885,7 @@ TEST_P(MultiHop, addr) {
 //#endif
 
 
-//#if 0
+#if 0
 TEST_P(MultiHop, mstPassFail) {
 
     MockUart mock;
@@ -2450,7 +2450,7 @@ TEST_P(MultiHop, pduNoHopRxAck)
 }
 
 //#if 0
-//#endif
+#endif
 
 //TEST_P(MultiHop, l2test) {
 //
@@ -2460,10 +2460,10 @@ INSTANTIATE_TEST_SUITE_P(
     Runs, MultiHop,
     ::testing::Values(
       //     pos port1   port2
-     /* Case{1, {0x101, 0x301}, {3, 2}},
+      Case{ 1, {0x101, 0x301}, {3, 2}},
       Case{ 2, {0x201, 0x302}, {3, 2} },
       Case{ 3, {0x102, 0x202}, {3, 3} },
-      Case{ 5, {0x203, 0x000}, {3, 0} },*/
+      Case{ 5, {0x203, 0x000}, {3, 0} },
       Case{ 7, {0x103, 0x000}, {3, 0} }
     )
 );

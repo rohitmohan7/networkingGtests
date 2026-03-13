@@ -11,65 +11,216 @@ uint16_t port_addr[MAX_PORT]; // L3 & L2
 uint16_t myPos;
 NodeCfg topology[MAX_POS];
 
+#define INVALID_SUBNET              0xFFu
+#define INVALID_GATEWAY             0xFFFFu
+
+#define MAX_FLOWS                   (MAX_POS * MAX_POS)
+#define MAX_PATH_SUBNETS            (MAX_SUBNET)
+#define MAX_CANDIDATES_PER_FLOW     32   /* increase if needed */
+
+/* ------------------------------- outputs -------------------------------- */
+
 uint16_t l3AddrTableTest[MAX_POS][MAX_PORT];
+
+/*
+ * Route to destination subnet:
+ *   0       -> directly connected
+ *   0xFFFF  -> unreachable
+ *   else    -> first-hop gateway L3 address
+ */
 uint16_t l3RouteTableTest[MAX_POS][MAX_SUBNET];
-//void scheduler();
+
+/*
+ * Chosen global one-way flow decision for srcPos -> dstPos:
+ *   nodeFirstGatewayTable[src][dst] = 0       if direct
+ *   nodeFirstGatewayTable[src][dst] = 0xFFFF  if unreachable
+ *   otherwise first-hop gateway address
+ *
+ * nodeChosenDstSubnetTable[src][dst] tells which destination subnet
+ * was selected for that destination node in the global optimum.
+ */
+uint16_t nodeFirstGatewayTable[MAX_POS][MAX_POS];
+uint8_t  nodeChosenDstSubnetTable[MAX_POS][MAX_POS];
+
+/* Final globally optimized per-subnet one-way load */
+uint16_t optimizedBusLoad[MAX_SUBNET];
+
+/* ---------------------- route building helper state ---------------------- */
 
 typedef struct
 {
-    uint8_t reachable;
-    uint8_t hops;
-    uint16_t load;
+    uint8_t  reachable;
+    uint8_t  hops;
+    uint32_t load;
     uint16_t firstGw;
-    uint8_t prevSubnet;
-    int8_t prevPeerPos;
+    uint8_t  prevSubnet;
+    int16_t  prevPeerPos;
 } RouteInfo;
 
-static bool better_route(uint8_t newHops, uint16_t newLoad,
-    uint8_t oldHops, uint16_t oldLoad)
+static bool better_route(uint8_t newHops,
+    uint32_t newLoad,
+    uint8_t oldHops,
+    uint32_t oldLoad)
 {
     if (newHops < oldHops) {
         return true;
     }
-    if (newHops == oldHops && newLoad < oldLoad) {
+    if ((newHops == oldHops) && (newLoad < oldLoad)) {
         return true;
     }
     return false;
 }
 
-void compute_routes_for_pos(int srcPos,
-    /*NodeCfg topology[MAX_POS],
-   /* uint16_t l3AddrTableTest[MAX_POS][MAX_PORT],
-    uint16_t l3RouteTableTest[MAX_POS][MAX_SUBNET],*/
-    uint8_t busLoad[MAX_SUBNET])
-{
-    RouteInfo route[MAX_SUBNET];
+/* ------------------------- candidate path structs ------------------------ */
 
+typedef struct
+{
+    uint8_t  subnetCount;                     /* number of traversed subnets */
+    uint8_t  subnets[MAX_PATH_SUBNETS];       /* ordered list of traversed subnets */
+    uint8_t  hops;                            /* gateway hops */
+    uint16_t firstGw;                         /* first-hop gateway address, 0 if direct */
+    uint8_t  dstSubnet;                       /* destination subnet used for dstPos */
+} PathCandidate;
+
+typedef struct
+{
+    uint8_t srcPos;
+    uint8_t dstPos;
+    uint8_t candidateCount;
+    uint8_t overflowed;                       /* exactness lost if 1 */
+    PathCandidate candidate[MAX_CANDIDATES_PER_FLOW];
+} Flow;
+
+/* ------------------------------- utilities ------------------------------- */
+
+static bool node_is_used(int pos)
+{
+    for (int port = 0; port < MAX_PORT; port++) {
+        if (topology[pos].subnet[port] != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool node_has_subnet(int pos, uint8_t subnet)
+{
+    if (subnet == 0) {
+        return false;
+    }
+
+    for (int port = 0; port < MAX_PORT; port++) {
+        if (topology[pos].subnet[port] == subnet) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool is_subnet_in_node_multiple_times_safe(int pos, uint8_t subnet, int* firstPort)
+{
+    for (int port = 0; port < MAX_PORT; port++) {
+        if (topology[pos].subnet[port] == subnet) {
+            *firstPort = port;
+            return true;
+        }
+    }
+    return false;
+}
+
+static uint16_t recompute_max_load(const uint16_t load[MAX_SUBNET])
+{
+    uint16_t maxLoad = 0;
+
+    for (int s = 1; s < MAX_SUBNET; s++) {
+        if (load[s] > maxLoad) {
+            maxLoad = load[s];
+        }
+    }
+
+    return maxLoad;
+}
+
+static bool candidate_equals(const PathCandidate* a, const PathCandidate* b)
+{
+    if (a->subnetCount != b->subnetCount) {
+        return false;
+    }
+    if (a->hops != b->hops) {
+        return false;
+    }
+    if (a->firstGw != b->firstGw) {
+        return false;
+    }
+    if (a->dstSubnet != b->dstSubnet) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < a->subnetCount; i++) {
+        if (a->subnets[i] != b->subnets[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* -------------------------- L3 address assignment ------------------------ */
+
+static void assign_l3_addresses(void)
+{
+    uint8_t l2Addr[MAX_SUBNET];
+
+    memset(l2Addr, 0, sizeof(l2Addr));
+    memset(l3AddrTableTest, 0, sizeof(l3AddrTableTest));
+
+    for (int pos = 1; pos < MAX_POS; pos++) {
+        for (int port = 0; port < MAX_PORT; port++) {
+            uint8_t subnet = topology[pos].subnet[port];
+            if (subnet == 0) {
+                continue;
+            }
+
+            l2Addr[subnet]++;
+            l3AddrTableTest[pos][port] = ((uint16_t)subnet << 8) | l2Addr[subnet];
+        }
+    }
+}
+
+/* ----------------------- shortest-path route solving --------------------- */
+
+/*
+ * Compute best routes from one source node to all subnets using a fixed
+ * busLoad snapshot. This is used later to build l3RouteTableTest after the
+ * global optimizer has chosen final loads.
+ */
+static void compute_routes_for_pos(int srcPos,
+    const uint16_t busLoad[MAX_SUBNET],
+    RouteInfo route[MAX_SUBNET])
+{
     for (int s = 0; s < MAX_SUBNET; s++) {
         route[s].reachable = 0;
-        route[s].hops = 0xFF;
-        route[s].load = 0xFFFF;
-        route[s].firstGw = 0;
-        route[s].prevSubnet = 0xFF;
+        route[s].hops = 0xFFu;
+        route[s].load = 0xFFFFFFFFu;
+        route[s].firstGw = INVALID_GATEWAY;
+        route[s].prevSubnet = INVALID_SUBNET;
         route[s].prevPeerPos = -1;
     }
 
-    // Seed: source node's directly attached subnets
     for (int port = 0; port < MAX_PORT; port++) {
-        uint8_t s = topology[srcPos].subnet[port];
-        if (!s) {
+        uint8_t subnet = topology[srcPos].subnet[port];
+        if (subnet == 0) {
             continue;
         }
 
-        route[s].reachable = 1;
-        route[s].hops = 0;
-        route[s].load = 0;
-        route[s].firstGw = 0;
-        route[s].prevSubnet = 0xFF;
-        route[s].prevPeerPos = -1;
+        route[subnet].reachable = 1;
+        route[subnet].hops = 0;
+        route[subnet].load = busLoad[subnet];
+        route[subnet].firstGw = 0;
+        route[subnet].prevSubnet = INVALID_SUBNET;
+        route[subnet].prevPeerPos = -1;
     }
 
-    // Relax routes repeatedly, Bellman-Ford style
     for (int pass = 0; pass < MAX_SUBNET - 1; pass++) {
         bool changed = false;
 
@@ -78,10 +229,9 @@ void compute_routes_for_pos(int srcPos,
                 continue;
             }
 
-            // Try every "input subnet" on this peer
             for (int inPort = 0; inPort < MAX_PORT; inPort++) {
                 uint8_t inSubnet = topology[peerPos].subnet[inPort];
-                if (!inSubnet) {
+                if (inSubnet == 0) {
                     continue;
                 }
 
@@ -90,29 +240,28 @@ void compute_routes_for_pos(int srcPos,
                 }
 
                 uint16_t gwAddrOnInSubnet = l3AddrTableTest[peerPos][inPort];
-                uint8_t newHopsBase = (uint8_t)(route[inSubnet].hops + 1);
-                uint16_t newLoadBase = (uint16_t)(route[inSubnet].load + busLoad[inSubnet]);
+                uint8_t newHops = (uint8_t)(route[inSubnet].hops + 1);
                 uint16_t newFirstGw = (route[inSubnet].hops == 0)
                     ? gwAddrOnInSubnet
                     : route[inSubnet].firstGw;
 
-                // This peer can bridge from inSubnet to every other subnet it owns
                 for (int outPort = 0; outPort < MAX_PORT; outPort++) {
                     uint8_t outSubnet = topology[peerPos].subnet[outPort];
-                    if (!outSubnet || outSubnet == inSubnet) {
+                    if ((outSubnet == 0) || (outSubnet == inSubnet)) {
                         continue;
                     }
 
-                    if (!route[outSubnet].reachable ||
-                        better_route(newHopsBase, newLoadBase,
-                            route[outSubnet].hops, route[outSubnet].load)) {
+                    uint32_t newLoad = route[inSubnet].load + busLoad[outSubnet];
 
+                    if (!route[outSubnet].reachable ||
+                        better_route(newHops, newLoad,
+                            route[outSubnet].hops, route[outSubnet].load)) {
                         route[outSubnet].reachable = 1;
-                        route[outSubnet].hops = newHopsBase;
-                        route[outSubnet].load = newLoadBase;
+                        route[outSubnet].hops = newHops;
+                        route[outSubnet].load = newLoad;
                         route[outSubnet].firstGw = newFirstGw;
                         route[outSubnet].prevSubnet = inSubnet;
-                        route[outSubnet].prevPeerPos = (int8_t)peerPos;
+                        route[outSubnet].prevPeerPos = (int16_t)peerPos;
                         changed = true;
                     }
                 }
@@ -123,85 +272,481 @@ void compute_routes_for_pos(int srcPos,
             break;
         }
     }
-
-    // Write route table: one next-hop gateway per destination subnet
-    for (int dstSubnet = 0; dstSubnet < MAX_SUBNET; dstSubnet++) {
-        l3RouteTableTest[srcPos][dstSubnet] = route[dstSubnet].firstGw;
-    }
 }
 
-void setPortAddr() {
-    // set port addr
-    uint8_t l2Addr[MAX_SUBNET];
-    uint8_t busLoad[MAX_SUBNET];
+/* ------------------ candidate generation for each flow ------------------- */
 
-    memset(l2Addr, 0, sizeof(l2Addr));
-    memset(busLoad, 0, sizeof(busLoad));
-    memset(l3RouteTableTest, 0, sizeof(l3RouteTableTest));
-    memset(l3AddrTableTest, 0, sizeof(l3AddrTableTest));
+static void bfs_shortest_hops_from_src(int srcPos, uint8_t dist[MAX_SUBNET])
+{
+    uint8_t queue[MAX_SUBNET];
+    int qHead = 0;
+    int qTail = 0;
 
-    // assign all L3 port addresses once
-    for (int pos = 1; pos < MAX_POS; pos++) {
-        for (int port = 0; port < MAX_PORT; port++) {
-            uint8_t subnet = topology[pos].subnet[port];
-            if (!subnet) {
-                continue;
-            }
+    for (int s = 0; s < MAX_SUBNET; s++) {
+        dist[s] = 0xFFu;
+    }
 
-            l2Addr[subnet]++;
-            l3AddrTableTest[pos][port] = ((uint16_t)subnet << 8) | l2Addr[subnet];
+    for (int port = 0; port < MAX_PORT; port++) {
+        uint8_t subnet = topology[srcPos].subnet[port];
+        if (subnet == 0) {
+            continue;
+        }
+
+        if (dist[subnet] == 0xFFu) {
+            dist[subnet] = 0;
+            queue[qTail++] = subnet;
         }
     }
 
-    /* Estimate bus load for direct/shared-subnet choices */
-    for (int pos = 1; pos < MAX_POS; pos++) {
+    while (qHead < qTail) {
+        uint8_t inSubnet = queue[qHead++];
+
         for (int peerPos = 1; peerPos < MAX_POS; peerPos++) {
-            if (pos == peerPos) {
+            if (peerPos == srcPos) {
                 continue;
             }
 
-            uint8_t localGatewayCnt = 0;
-            uint8_t prefTxIdx = 0;
-            uint8_t prefTxLoad = 0xFF;
-
-            for (int peerPort = 0; peerPort < MAX_PORT; peerPort++) {
-                uint8_t peerSubnet = topology[peerPos].subnet[peerPort];
-                if (!peerSubnet) {
+            for (int inPort = 0; inPort < MAX_PORT; inPort++) {
+                if (topology[peerPos].subnet[inPort] != inSubnet) {
                     continue;
                 }
 
-                bool sharedSubnet = false;
-                for (int port = 0; port < MAX_PORT; port++) {
-                    if (topology[pos].subnet[port] == peerSubnet) {
-                        sharedSubnet = true;
-                        break;
+                for (int outPort = 0; outPort < MAX_PORT; outPort++) {
+                    uint8_t outSubnet = topology[peerPos].subnet[outPort];
+                    if ((outSubnet == 0) || (outSubnet == inSubnet)) {
+                        continue;
+                    }
+
+                    if (dist[outSubnet] == 0xFFu) {
+                        dist[outSubnet] = (uint8_t)(dist[inSubnet] + 1);
+                        queue[qTail++] = outSubnet;
                     }
                 }
-
-                if (!sharedSubnet) {
-                    continue;
-                }
-
-                if (localGatewayCnt == 0 || busLoad[peerSubnet] < prefTxLoad) {
-                    prefTxIdx = peerPort;
-                    prefTxLoad = busLoad[peerSubnet];
-                }
-                localGatewayCnt++;
-            }
-
-            if (localGatewayCnt > 0) {
-                uint8_t chosenSubnet = topology[peerPos].subnet[prefTxIdx];
-                busLoad[chosenSubnet]++;
             }
         }
     }
-
-    for (int pos = 1; pos < MAX_POS; pos++) {
-        compute_routes_for_pos(pos, busLoad);
-    }
-    return;
 }
 
+static void record_candidate(Flow* flow,
+    const uint8_t pathSubnets[MAX_PATH_SUBNETS],
+    uint8_t pathLen,
+    uint8_t hops,
+    uint16_t firstGw,
+    uint8_t dstSubnet)
+{
+    PathCandidate temp;
+    temp.subnetCount = pathLen;
+    temp.hops = hops;
+    temp.firstGw = firstGw;
+    temp.dstSubnet = dstSubnet;
+
+    for (uint8_t i = 0; i < pathLen; i++) {
+        temp.subnets[i] = pathSubnets[i];
+    }
+
+    for (uint8_t i = 0; i < flow->candidateCount; i++) {
+        if (candidate_equals(&temp, &flow->candidate[i])) {
+            return;
+        }
+    }
+
+    if (flow->candidateCount >= MAX_CANDIDATES_PER_FLOW) {
+        flow->overflowed = 1;
+        return;
+    }
+
+    flow->candidate[flow->candidateCount++] = temp;
+}
+
+static void dfs_collect_shortest_candidates(int srcPos,
+    int dstPos,
+    uint8_t currentSubnet,
+    uint8_t minDstHops,
+    const uint8_t dist[MAX_SUBNET],
+    uint8_t pathSubnets[MAX_PATH_SUBNETS],
+    uint8_t pathLen,
+    uint16_t firstGw,
+    bool firstGwSet,
+    Flow* flow)
+{
+    if (pathLen == 0 || pathLen > MAX_PATH_SUBNETS) {
+        return;
+    }
+
+    if (node_has_subnet(dstPos, currentSubnet) && (dist[currentSubnet] == minDstHops)) {
+        record_candidate(flow,
+            pathSubnets,
+            pathLen,
+            minDstHops,
+            firstGwSet ? firstGw : 0,
+            currentSubnet);
+        return;
+    }
+
+    if (dist[currentSubnet] >= minDstHops) {
+        return;
+    }
+
+    for (int peerPos = 1; peerPos < MAX_POS; peerPos++) {
+        if (peerPos == srcPos) {
+            continue;
+        }
+
+        for (int inPort = 0; inPort < MAX_PORT; inPort++) {
+            if (topology[peerPos].subnet[inPort] != currentSubnet) {
+                continue;
+            }
+
+            uint16_t gwAddr = l3AddrTableTest[peerPos][inPort];
+
+            for (int outPort = 0; outPort < MAX_PORT; outPort++) {
+                uint8_t outSubnet = topology[peerPos].subnet[outPort];
+                if ((outSubnet == 0) || (outSubnet == currentSubnet)) {
+                    continue;
+                }
+
+                if (dist[outSubnet] != (uint8_t)(dist[currentSubnet] + 1)) {
+                    continue;
+                }
+
+                if (pathLen >= MAX_PATH_SUBNETS) {
+                    continue;
+                }
+
+                pathSubnets[pathLen] = outSubnet;
+
+                dfs_collect_shortest_candidates(srcPos,
+                    dstPos,
+                    outSubnet,
+                    minDstHops,
+                    dist,
+                    pathSubnets,
+                    (uint8_t)(pathLen + 1),
+                    firstGwSet ? firstGw : gwAddr,
+                    true,
+                    flow);
+            }
+        }
+    }
+}
+
+static void generate_flow_candidates(int srcPos, int dstPos, Flow* flow)
+{
+    uint8_t dist[MAX_SUBNET];
+    uint8_t minDstHops = 0xFFu;
+    uint8_t pathSubnets[MAX_PATH_SUBNETS];
+
+    memset(flow, 0, sizeof(*flow));
+    flow->srcPos = (uint8_t)srcPos;
+    flow->dstPos = (uint8_t)dstPos;
+
+    if (!node_is_used(srcPos) || !node_is_used(dstPos) || (srcPos == dstPos)) {
+        return;
+    }
+
+    bfs_shortest_hops_from_src(srcPos, dist);
+
+    for (int port = 0; port < MAX_PORT; port++) {
+        uint8_t dstSubnet = topology[dstPos].subnet[port];
+        if (dstSubnet == 0) {
+            continue;
+        }
+
+        if (dist[dstSubnet] < minDstHops) {
+            minDstHops = dist[dstSubnet];
+        }
+    }
+
+    if (minDstHops == 0xFFu) {
+        return; /* unreachable */
+    }
+
+    for (int port = 0; port < MAX_PORT; port++) {
+        uint8_t srcSubnet = topology[srcPos].subnet[port];
+        if (srcSubnet == 0) {
+            continue;
+        }
+
+        if (dist[srcSubnet] != 0) {
+            continue;
+        }
+
+        pathSubnets[0] = srcSubnet;
+
+        if ((minDstHops == 0) && node_has_subnet(dstPos, srcSubnet)) {
+            record_candidate(flow, pathSubnets, 1, 0, 0, srcSubnet);
+            continue;
+        }
+
+        dfs_collect_shortest_candidates(srcPos,
+            dstPos,
+            srcSubnet,
+            minDstHops,
+            dist,
+            pathSubnets,
+            1,
+            0,
+            false,
+            flow);
+    }
+}
+
+/* ------------------------ exact global optimization ---------------------- */
+
+typedef struct
+{
+    Flow flows[MAX_FLOWS];
+    int flowCount;
+
+    int reachableFlowIndex[MAX_FLOWS];
+    int reachableFlowCount;
+
+    int currentChoice[MAX_FLOWS];
+    int bestChoice[MAX_FLOWS];
+
+    uint16_t currentLoad[MAX_SUBNET];
+    uint16_t bestLoad[MAX_SUBNET];
+
+    uint64_t currentSumSquares;
+    uint16_t bestMaxLoad;
+    uint64_t bestSumSquares;
+
+    bool found;
+} SearchState;
+
+static void sort_reachable_flows_for_search(SearchState* st)
+{
+    for (int i = 0; i < st->reachableFlowCount; i++) {
+        for (int j = i + 1; j < st->reachableFlowCount; j++) {
+            Flow* fi = &st->flows[st->reachableFlowIndex[i]];
+            Flow* fj = &st->flows[st->reachableFlowIndex[j]];
+
+            uint8_t fiCand = fi->candidateCount;
+            uint8_t fjCand = fj->candidateCount;
+            uint8_t fiHops = (fiCand > 0) ? fi->candidate[0].hops : 0;
+            uint8_t fjHops = (fjCand > 0) ? fj->candidate[0].hops : 0;
+
+            bool swap = false;
+
+            if (fiCand > fjCand) {
+                swap = true;
+            }
+            else if ((fiCand == fjCand) && (fiHops < fjHops)) {
+                swap = true;
+            }
+
+            if (swap) {
+                int tmp = st->reachableFlowIndex[i];
+                st->reachableFlowIndex[i] = st->reachableFlowIndex[j];
+                st->reachableFlowIndex[j] = tmp;
+            }
+        }
+    }
+}
+
+static void apply_candidate_load(const PathCandidate* cand,
+    uint16_t load[MAX_SUBNET],
+    uint64_t* sumSquares)
+{
+    for (uint8_t i = 0; i < cand->subnetCount; i++) {
+        uint8_t s = cand->subnets[i];
+        uint16_t old = load[s];
+        load[s] = (uint16_t)(old + 1);
+        *sumSquares += (uint64_t)(2u * old + 1u);
+    }
+}
+
+static void undo_candidate_load(const PathCandidate* cand,
+    uint16_t load[MAX_SUBNET],
+    uint64_t* sumSquares)
+{
+    for (uint8_t i = 0; i < cand->subnetCount; i++) {
+        uint8_t s = cand->subnets[i];
+        load[s] = (uint16_t)(load[s] - 1);
+        *sumSquares -= (uint64_t)(2u * load[s] + 1u);
+    }
+}
+
+static void search_exact_global(SearchState* st, int depth, uint16_t currentMaxLoad)
+{
+    if (st->found) {
+        if (currentMaxLoad > st->bestMaxLoad) {
+            return;
+        }
+        if ((currentMaxLoad == st->bestMaxLoad) &&
+            (st->currentSumSquares >= st->bestSumSquares)) {
+            return;
+        }
+    }
+
+    if (depth >= st->reachableFlowCount) {
+        st->found = true;
+        st->bestMaxLoad = currentMaxLoad;
+        st->bestSumSquares = st->currentSumSquares;
+        memcpy(st->bestChoice, st->currentChoice, sizeof(st->bestChoice));
+        memcpy(st->bestLoad, st->currentLoad, sizeof(st->bestLoad));
+        return;
+    }
+
+    int flowIdx = st->reachableFlowIndex[depth];
+    Flow* flow = &st->flows[flowIdx];
+
+    for (int candIdx = 0; candIdx < flow->candidateCount; candIdx++) {
+        const PathCandidate* cand = &flow->candidate[candIdx];
+
+        apply_candidate_load(cand, st->currentLoad, &st->currentSumSquares);
+        st->currentChoice[flowIdx] = candIdx;
+
+        uint16_t newMaxLoad = recompute_max_load(st->currentLoad);
+
+        search_exact_global(st, depth + 1, newMaxLoad);
+
+        undo_candidate_load(cand, st->currentLoad, &st->currentSumSquares);
+        st->currentChoice[flowIdx] = -1;
+    }
+}
+
+static bool optimize_all_flows_exact(void)
+{
+    SearchState st;
+    memset(&st, 0, sizeof(st));
+
+    for (int i = 0; i < MAX_FLOWS; i++) {
+        st.currentChoice[i] = -1;
+        st.bestChoice[i] = -1;
+    }
+
+    /* Build all ordered flows srcPos -> dstPos */
+    for (int srcPos = 1; srcPos < MAX_POS; srcPos++) {
+        if (!node_is_used(srcPos)) {
+            continue;
+        }
+
+        for (int dstPos = 1; dstPos < MAX_POS; dstPos++) {
+            if (!node_is_used(dstPos) || (srcPos == dstPos)) {
+                continue;
+            }
+
+            if (st.flowCount >= MAX_FLOWS) {
+                return false;
+            }
+
+            generate_flow_candidates(srcPos, dstPos, &st.flows[st.flowCount]);
+
+            if (st.flows[st.flowCount].overflowed) {
+                return false; /* increase MAX_CANDIDATES_PER_FLOW */
+            }
+
+            if (st.flows[st.flowCount].candidateCount > 0) {
+                st.reachableFlowIndex[st.reachableFlowCount++] = st.flowCount;
+            }
+
+            st.flowCount++;
+        }
+    }
+
+    sort_reachable_flows_for_search(&st);
+
+    memset(st.currentLoad, 0, sizeof(st.currentLoad));
+    memset(st.bestLoad, 0, sizeof(st.bestLoad));
+    st.currentSumSquares = 0;
+    st.bestMaxLoad = 0xFFFFu;
+    st.bestSumSquares = 0xFFFFFFFFFFFFFFFFull;
+    st.found = false;
+
+    search_exact_global(&st, 0, 0);
+
+    if (!st.found) {
+        /*
+         * This can still happen if there are simply no reachable flows.
+         * We treat that as success with zero load.
+         */
+        memset(optimizedBusLoad, 0, sizeof(optimizedBusLoad));
+    }
+    else {
+        memcpy(optimizedBusLoad, st.bestLoad, sizeof(optimizedBusLoad));
+    }
+
+    /* Fill node-level chosen route tables */
+    for (int srcPos = 0; srcPos < MAX_POS; srcPos++) {
+        for (int dstPos = 0; dstPos < MAX_POS; dstPos++) {
+            nodeFirstGatewayTable[srcPos][dstPos] = INVALID_GATEWAY;
+            nodeChosenDstSubnetTable[srcPos][dstPos] = INVALID_SUBNET;
+        }
+    }
+
+    for (int i = 0; i < st.flowCount; i++) {
+        Flow* flow = &st.flows[i];
+        int srcPos = flow->srcPos;
+        int dstPos = flow->dstPos;
+
+        if (flow->candidateCount == 0) {
+            nodeFirstGatewayTable[srcPos][dstPos] = INVALID_GATEWAY;
+            nodeChosenDstSubnetTable[srcPos][dstPos] = INVALID_SUBNET;
+            continue;
+        }
+
+        if (!st.found || st.bestChoice[i] < 0) {
+            nodeFirstGatewayTable[srcPos][dstPos] = INVALID_GATEWAY;
+            nodeChosenDstSubnetTable[srcPos][dstPos] = INVALID_SUBNET;
+            continue;
+        }
+
+        const PathCandidate* bestCand = &flow->candidate[st.bestChoice[i]];
+        nodeFirstGatewayTable[srcPos][dstPos] = bestCand->firstGw;
+        nodeChosenDstSubnetTable[srcPos][dstPos] = bestCand->dstSubnet;
+    }
+
+    return true;
+}
+
+/* ------------------------ final subnet route table ----------------------- */
+
+static void build_final_route_table_from_optimized_load(void)
+{
+    RouteInfo route[MAX_SUBNET];
+
+    memset(l3RouteTableTest, 0xFF, sizeof(l3RouteTableTest));
+
+    for (int srcPos = 1; srcPos < MAX_POS; srcPos++) {
+        if (!node_is_used(srcPos)) {
+            continue;
+        }
+
+        compute_routes_for_pos(srcPos, optimizedBusLoad, route);
+
+        for (int dstSubnet = 1; dstSubnet < MAX_SUBNET; dstSubnet++) {
+            if (!route[dstSubnet].reachable) {
+                l3RouteTableTest[srcPos][dstSubnet] = INVALID_GATEWAY;
+            }
+            else {
+                l3RouteTableTest[srcPos][dstSubnet] = route[dstSubnet].firstGw;
+            }
+        }
+    }
+}
+
+/* ------------------------------ entry point ------------------------------ */
+
+/*
+ * Returns true if an exact global optimum was computed successfully.
+ * Returns false if MAX_CANDIDATES_PER_FLOW was too small for exactness.
+ */
+bool setPortAddr(void)
+{
+    assign_l3_addresses();
+
+    if (!optimize_all_flows_exact()) {
+        memset(optimizedBusLoad, 0, sizeof(optimizedBusLoad));
+        memset(nodeFirstGatewayTable, 0xFF, sizeof(nodeFirstGatewayTable));
+        memset(nodeChosenDstSubnetTable, 0xFF, sizeof(nodeChosenDstSubnetTable));
+        memset(l3RouteTableTest, 0xFF, sizeof(l3RouteTableTest));
+        return false;
+    }
+
+    build_final_route_table_from_optimized_load();
+    return true;
+}
 
 #if 0
 void setPortAddr() {

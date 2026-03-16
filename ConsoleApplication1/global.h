@@ -15,17 +15,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#if 0
-#define MAX_POS 8
-#define MAX_PORT 2
 
-extern uint16_t myPos;
-
-typedef struct {
-    uint8_t subnet[MAX_PORT];   // 0 if unused
-} NodeCfg;
-
-extern NodeCfg topology[MAX_POS]; // topology from config
-#endif
 
 

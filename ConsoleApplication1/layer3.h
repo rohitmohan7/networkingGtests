@@ -17,7 +17,7 @@ typedef struct __attribute__((packed)) {
 	L4Pkt l4Pkt;
 } L3Pkt;
 
-extern uint16_t l3AddrTable[MAX_POS];
+extern uint16_t l3AddrTblPrio[MAX_POS][MAX_PORT]; // pos addr table ordered by hops/bus load
 extern uint16_t l3RouteTable[MAX_SUBNET]; // gateway table
 
 void l3Init();

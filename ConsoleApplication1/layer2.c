@@ -11,7 +11,7 @@ uint8_t maxL2Addr[MAX_PORT];
 #define L2_PIT_TIMER_START_IDX 1
 #define BUS_CLK_HZ 48000
 
-#define SILENT_TIMER (((uint8_t)port_addr[port]) * LINE_SILENT)
+#define SILENT_TIMER (((uint8_t)l3AddrTblPrio[myPos][port]) * LINE_SILENT)
 
 #define XFER_DIR 2 // TX RX
 
@@ -20,7 +20,7 @@ uint8_t maxL2Addr[MAX_PORT];
 
 uint8_t getNxtMst(uint8_t port, uint8_t addr) {
 	uint8_t max = maxL2Addr[port];     // valid range: 1..max
-	uint8_t r = port_addr[port];
+	uint8_t r = l3AddrTblPrio[myPos][port];
 
 	uint8_t next = (uint8_t)(addr + 1u);
 	if (next == 0u || next > max) next = 1u;   // wrap, and also handles uint8_t overflow
@@ -54,7 +54,7 @@ void l2SendMsg(uint8_t port) {
 		l2SendPdu(port, passMST, l2Addr);
 	}
 	else {
-		const uint8_t txAddr = l2TxPktDesc[port].l2TxPkt.hdr.addr > 0 ? l2TxPktDesc[port].l2TxPkt.hdr.addr : port_addr[port];
+		const uint8_t txAddr = l2TxPktDesc[port].l2TxPkt.hdr.addr > 0 ? l2TxPktDesc[port].l2TxPkt.hdr.addr : l3AddrTblPrio[myPos][port];
 		l2SendMst(port, getNxtMst(port, txAddr));
 	}
 }
@@ -72,7 +72,7 @@ void l2Init() {
 	memset(l2RxPktDesc, 0x0, sizeof l2RxPktDesc);
 	for (int port = 0; port < MAX_PORT; port++) {
 		l2RxPktDesc[port].abort = false;
-		if (port_addr[port] > 0) {
+		if (l3AddrTblPrio[myPos][port] > 0) {
 			pitEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(SILENT_TIMER, BUS_CLK_HZ), &mstTmOut);
 		}
 	}
@@ -242,7 +242,7 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 
 	// validate message early
 	if (idx >= sizeof(l2RxPktDesc[port].l2RxPkt.hdr.addr)) {
-		if (l2RxPktDesc[port].l2RxPkt.hdr.addr != ((uint8_t)port_addr[port])) {
+		if (l2RxPktDesc[port].l2RxPkt.hdr.addr != ((uint8_t)l3AddrTblPrio[myPos][port])) {
 			return len; // abort rx early pkt not for this dev let mst timeout retry since cannot distinguish if its due to a if due to a tx error
 		}
 	}

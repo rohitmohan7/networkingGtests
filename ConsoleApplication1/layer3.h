@@ -12,15 +12,27 @@ typedef struct __attribute__((packed)) {
 	uint8_t prio;
 } L3Hdr;
 
+typedef struct PgPtr_st {
+	uint8_t hdPg;
+	uint8_t tlPg;
+	uint8_t  hdOfst;       /* 0..UNIT-1 */
+	uint8_t  tlUsd;
+} PgPtr_t;
+
 typedef struct __attribute__((packed)) {
 	L3Hdr hdr;
-	L4Pkt l4Pkt;
+	union {
+		PgPtr_t* frwdPkt;
+		L4Pkt l4Pkt;
+	} pkt;
 } L3Pkt;
 
 extern uint16_t l3AddrTblPrio[MAX_POS][MAX_PORT]; // pos addr table ordered by hops/bus load
 extern uint16_t l3RouteTable[MAX_SUBNET]; // gateway table
+extern uint8_t l3BcastInSubnetForSrcPort[MAX_POS][MAX_PORT];
+extern uint8_t l3RouteHops[MAX_SUBNET];
 
-void l3Init();
+void l3Init(void);
 
 // return L2 addr 
 // xferMst pass MST
@@ -36,6 +48,6 @@ void l3CmtRx(L3Pkt *l3Pkt, const uint8_t port);
 
 bool l3CmtRxHd(L3Pkt *l3Pkt, const uint8_t port);
 
-uint8_t getL3RxPktFrag(L3Pkt *l3Pkt, uint8_t **ptr, uint8_t idx, uint8_t rxLen);
+uint8_t getL3RxPktFrag(uint8_t port, L3Pkt *l3Pkt, uint8_t **ptr, uint8_t idx, uint8_t rxLen);
 
 #endif

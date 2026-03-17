@@ -90,5 +90,7 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, 
 }
 
 bool appRecv(uint16_t pos, uint8_t priority) { // TODO
+    stream_t *s = &streams[pos][priority];
     
+    //uint8_t msgType = ; 
 }

@@ -152,6 +152,7 @@ static inline void freeStream(stream_t *s)
 		page_free(currPage);
 	}
 	s->tail_page = s->head_page;
+	s->txMsgHdr.msgFlgs = 0;
 }
 
 static inline void freeRxStream(stream_t *s)
@@ -163,6 +164,7 @@ static inline void freeRxStream(stream_t *s)
 		page_free(currPage);
 	}
 	s->rxTlPg = s->rxHdPg;
+	s->rxMsgHdr.msgFlgs = 0;
 }
 
 static inline bool clearMsgFrame(L4Pkt *l4Pkt, stream_t *s, bool allFrames)
@@ -346,10 +348,10 @@ void l4SndAck(stream_t *const s)
 	}
 }
 
-void l4CmtRx(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio) { // recieved a frame
+void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio) { // recieved a frame
 	L4Hdr *l4Hdr = &l4Pkt->hdr;
 	// identify the stream
-	stream_t *const s = &streams[pos][prio];
+	stream_t *const s = &streams[l4Pkt->pos][prio];
 
 	if (l4Hdr->msgFlgs & L4_MSG_FLAG_TYPE_ACK) // this is an ack message
 	{
@@ -375,6 +377,12 @@ void l4CmtRx(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio) { // recieved 
 
 uint8_t getL4RxPktFrag(L4Pkt *l4Pkt, uint8_t **ptr, uint8_t idx, uint8_t rxLen, uint8_t prio)
 {
+	L4Hdr* l4Hdr = &l4Pkt->hdr;
+	if (l4Hdr->msgFlgs & L4_MSG_FLAG_TYPE_ACK) // ack msg should have only hdr
+	{
+		return 0;
+	}
+
 	stream_t *const s = &streams[l4Pkt->pos][prio];
 	if (s->rxHdPg == INVALID_PAGE) {
 		s->rxHdPg = s->rxTlPg = page_alloc();
@@ -401,18 +409,14 @@ uint8_t getL4RxPktFrag(L4Pkt *l4Pkt, uint8_t **ptr, uint8_t idx, uint8_t rxLen, 
 	}
 }
 
+bool l4CmtRxPnding(L4Pkt* l4Pkt) {
+	L4Hdr* l4Hdr = &l4Pkt->hdr;
+	return !(l4Hdr->msgFlgs & L4_MSG_FLAG_RXHD_CMT);
+}
+
 bool l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio)
 {
 	L4Hdr *l4Hdr = &l4Pkt->hdr;
-
-	if (l4Hdr->msgFlgs & L4_MSG_FLAG_TYPE_ACK) // ack msg should have only hdr
-	{
-		return 0;
-	}
-
-	if (prio > MAX_PRIORITY) {
-		return false;
-	}
 
 	l4Pkt->pos = pos;
 	stream_t *const s = &streams[l4Pkt->pos][prio];
@@ -421,150 +425,7 @@ bool l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio)
 	{
 		freeRxStream(s); // clear the rx stream for new message
 	}
+
+	l4Hdr->msgFlgs |= L4_MSG_FLAG_RXHD_CMT;
 	return true;
 }
-
-#if 0
-void l4Tick(uint8_t ms) {
-	for (uint16_t pos = 0; pos < MAX_POS; pos++) {
-		for (uint8_t prio = 0; prio < MAX_PRIORITY; prio++) {
-			stream_t* s = &streams[pos][prio];
-			if ((s->txMsgHdr.msgFlgs & L4_MSG_FLAG_PENDING_ACK)) {
-				s->retryTmr = (((uint16_t)s->retryTmr) + (uint16_t)ms) > 0xFF ? 0xFF : s->retryTmr + ms;
-
-				if (s->retryTmr > L4_RETRY_TIMEOUT) {
-					if (s->retryCnt >= MAX_L4_RETRY) {
-						// drop move and move to next msg
-					}
-					else {
-						s->retryCnt++;
-						s->txMsgHdr.msgFlgs &= ~L4_MSG_FLAG_PENDING_ACK;
-						s->retryTmr = 0;
-					}
-				}
-			}
-		}
-	}
-}
-// directly enqueue next prio msg in ACK
-bool l4Ack(L4Pkt* l4Pkt, uint8_t prio, uint16_t dstAddr) {
-
-
-	for (int pos = 0; pos < MAX_POS; pos++) {
-		stream_t* s = &streams[pos];
-		if (s->dst != dstAddr) {
-			continue;
-		}
-
-		prio_stream_t* ps = &s->prio[prio];
-
-		// free till tail
-		while (ps->head_page != l4Pkt->tail_page) {
-			uint8_t currPage = ps->head_page;
-			ps->head_page = g_next[ps->head_page];
-			page_free(currPage);
-		}
-
-		// free from allocator
-		if (l4Pkt->tail_used == UNIT) { // full tail used 
-			page_free(ps->head_page);
-			ps->head_page = g_next[l4Pkt->tail_page];
-			ps->head_off = 0;
-		}
-		else {
-			//ps->head_page = l4Pkt->tail_page;
-			ps->head_off = l4Pkt->tail_used;
-		}
-
-		L4Hdr* hdr = &l4Pkt->hdr;
-		L4Hdr* txHdr = &ps->txMsgHdr;
-		if (ps->head_page != INVALID_PAGE) {
-
-			if (hdr->msgLen == 0) {
-				txHdr->msgNo++; // increment seq number
-
-				for (int i = 0; i < sizeof(txHdr->msgLen); i++) {
-					uint16_t base = pageOff(ps->head_page) + (ps->head_off);
-					txHdr->msgLen |= (g_pool[base]) << (8*i);
-					ps->head_off++;
-					if (ps->head_off == UNIT) {
-						ps->head_page = g_next[ps->head_page];
-						ps->head_off = 0;
-					}
-				}
-
-				if (txHdr->msgLen == 0) { //  no more message pending
-					ps->head_page = INVALID_PAGE;
-					ps->tail_page = INVALID_PAGE;
-				}
-				else { //  get tx order
-					for (int i = 0; i < sizeof(ps->txOrder); i++) {
-						uint16_t base = pageOff(ps->head_page) + (ps->head_off);
-						ps->txOrder |= (g_pool[base]) << (8 * i);
-						ps->head_off++;
-						if (ps->head_off == UNIT) {
-							ps->head_page = g_next[ps->head_page];
-							ps->head_off = 0;
-						}
-					}
-				}
-				return true;
-			}
-			else {
-				txHdr->msgLen = hdr->msgLen;
-			}
-		}
-		
-		queueMsg(l4Pkt, ps);
-		return false;
-		//break;
-	}
-}
-	
-void queueMsg(L4Pkt* l4Pkt, stream_t* ps) {
-	// set hdr
-	L4Hdr* l4PktHdr = &l4Pkt->hdr;
-	L4Hdr* txHdr = &ps->txMsgHdr;
-	memcpy(l4PktHdr, txHdr, (sizeof(L4Hdr) - sizeof(MsgLenType)));
-	l4PktHdr->msgLen = (txHdr->msgLen > L4_FRAME_SIZE) ? (txHdr->msgLen - L4_FRAME_SIZE) : 0; // remaining msg len
-	//l4Pkt->s = ps;
-#if 0
-	// feed packet
-	l4Pkt->head_page = ps->head_page;
-	l4Pkt->head_off = ps->head_off;
-
-	// debug
-	uint16_t base = pageOff(l4Pkt->head_page) + (uint16_t)l4Pkt->head_off;
-
-	// debug
-	uint8_t currHd = l4Pkt->head_page;
-	uint8_t len = min(L4_FRAME_SIZE, txHdr->msgLen); // write until min msg len
-
-	while (len > 0) {
-		if (/*currHd == ps->tail_page ||*/
-			len < (UNIT)) { // reached end
-			l4Pkt->tail_page = currHd;
-
-			if (currHd == ps->head_page) {
-				l4Pkt->tail_used = ps->head_off + len;
-			}
-			else {
-				l4Pkt->tail_used = /*currHd == ps->tail_page ? min(len, ps->tail_used) :*/ len;
-			}
-			base = pageOff(l4Pkt->tail_page) + (uint16_t)l4Pkt->tail_used;
-			break;
-		}
-
-		if (currHd == l4Pkt->head_page) {
-			len -= (UNIT - l4Pkt->head_off);
-		}
-		else {
-			len -= UNIT;
-		}
-
-		currHd = g_next[currHd];
-
-	}
-#endif
-}
-#endif

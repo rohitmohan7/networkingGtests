@@ -23,15 +23,21 @@
 #include <algorithm>
 #include <cstring>
 #include <array>
+
 #define _Static_assert(cond, msg) static_assert((cond), msg)
 
 extern "C" {
+
 #include "network.h"
 #include "layer2.h"
 #include "layer1.h"
 #include "app.h"
 #include "pit.h"
+#include "pmm.h"
+
+void PITCallback(uint8_t channel);
 }
+
 
 struct Case {
     int pos;
@@ -42,14 +48,27 @@ struct Case {
 };
 #define L2_PIT_TIMER_START_IDX 1
 
+ConfigFile_st config;
+
 class MultiHop : public ::testing::TestWithParam<Case> {
 protected:
     static void SetUpTestSuite() {
-        ::topology[1] = NodeCfg{ {1,3} };
-        ::topology[2] = NodeCfg{ {2,3} };
-        ::topology[3] = NodeCfg{ {1,2} };
-        ::topology[5] = NodeCfg{ {2,0} };
-        ::topology[7] = NodeCfg{ {1,0} };
+        
+        memset(&config, 0, sizeof(config));
+        config.topology[1] = NodeCfg_t{{1, 3}};
+        config.topology[2] = NodeCfg_t{{2, 3}};
+        config.topology[3] = NodeCfg_t{{1, 2}};
+        config.topology[5] = NodeCfg_t{{2, 0}};
+        config.topology[7] = NodeCfg_t{{1, 0}};
+        g_pmm.config = &config;
+        
+#if 0
+        ::topology[1] = NodeCfg_t{ {1,3} };
+        ::topology[2] = NodeCfg_t{ {2,3} };
+        ::topology[3] = NodeCfg_t{ {1,2} };
+        ::topology[5] = NodeCfg_t{ {2,0} };
+        ::topology[7] = NodeCfg_t{ {1,0} };
+#endif
         
         for (int i = 0; i < MAX_PORT; ++i) {
             uart_ptrs[i] = &uart_objs[i];
@@ -59,7 +78,9 @@ protected:
     void SetUp() override {
         pitInit();
         // runs before each TEST_F(MyFixture, ...)
-        myPos = GetParam().pos;
+        //myPos = GetParam().pos;
+        config.pos = GetParam().pos;
+
         for (int i = 0; i < MAX_PORT; ++i) {
             memset(uart_ptrs[i], 0, sizeof(UART_Type));
         }
@@ -73,6 +94,7 @@ protected:
     }
 
     static UART_Type  uart_objs[MAX_PORT];   // objects
+    
 public:
     static UART_Type* uart_ptrs[MAX_PORT];   // pointers passed to netInit
 };
@@ -399,7 +421,7 @@ void expectTxMultiFrame(MockUart& mock,
             EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), size))
                 .Times(1)
                 .WillOnce(testing::Invoke([msg, idx_loc](UART_Type* UART, const uint8_t* data, size_t len) {
-                printf("page: %d, len: %d\n", idx_loc, len);
+
                 EXPECT_EQ(0, std::memcmp(data, (msg + idx_loc), len));
                     }))
                 .RetiresOnSaturation();
@@ -1195,103 +1217,4 @@ int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
-#if 0
-typedef struct EventData {
 
-};
-
-#define MAX_MACHINE 10
-#define MAX_STATE 32
-#define MAX_EVENTS 8
-
-struct MachineState {
-    uint8_t eventMsk;
-    uint8_t actionMsk;
-    MachineState* nextState;
-};
-
-struct Machine {
-    MachineState state[MAX_STATE];
-    uint8_t currState;
-} machine[MAX_MACHINE];
-
-struct EventDescriptor {
-    uint16_t pos;
-} eventDesc[MAX_EVENTS];
-
-#define INPUT_EVENT_MSK 0x01
-
-typedef enum eventType {
-    INPUT,
-    ARINC,
-    CAN,
-    CIRCUIT
-};
-
-#define MAX_CONFIG 100
-
-typedef struct Config_st{
-    uint16_t machineMsk;
-    uint32_t stateMsk;
-    uint8_t eventMsk;
-} Config_t;
-
-Config_st config[MAX_CONFIG];
-uint8_t machineState[MAX_MACHINE];
-
-void gpioISR() {
-
-    for (int configIdx = 0; configIdx < MAX_CONFIG; configIdx++) {
-        Config_st* cfg = &config[configIdx];
-        for (int machineIdx = 0; machineIdx < MAX_MACHINE; machineIdx++) {
-
-            if ((cfg->machineMsk & (machineIdx << 1)) && 
-                (cfg->stateMsk & (machineState[machineIdx] << 1)) &&
-                )
-
-
-            if (cfg ) {
-                eventDesc[INPUT_EVENT]
-            }
-        }
-    }
-}
-#endif
-
-#if 0
-typedef struct {
-    uint8_t subnet[MAX_PORT];   // 0 if unused
-} NodeCfg;
-
-static NodeCfg topology[MAX_POS] = {
-    {},
-    {1, 3},
-    {2, 3},
-    {1, 2},
-    {},
-    {2},
-    {1}
-}; // topology from config
-
-static uint16_t pos_addr_table[MAX_POS];
-
-int main(void)
-{
-    // set port addr
-    uint8_t rs485Addr[MAX_PORT] = {1, 1};
-
-    for (int pos = 0; pos < MAX_POS; pos++) {
-        if (pos == myPos) {
-            
-        }
-        else {
-           // one subnet directly reachable
-            for (uint8_t port = 0; port < MAX_PORT; port++)
-            if ((topology[pos].subnet[0] == topology[myPos].subnet[0]) || 
-                (topology[pos].subnet[1] == topology[myPos].subnet[0])) {
-                rs485Addr[0]++;
-            }
-        }
-    }
-}
-#endif

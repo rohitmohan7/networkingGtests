@@ -10,6 +10,7 @@
 #define L4_MSG_FLAG_REQ_ACK 0x2
 #define L4_MSG_FLAG_STREAM_PENDING 0x4
 #define L4_MSG_FLAG_PENDING_ACK 0x8
+#define L4_MSG_FLAG_RXHD_CMT 0x10
 
 #define MAX_L4_RETRY 3
 #define L4_RETRY_TIMEOUT 200
@@ -106,9 +107,11 @@ void l4Init();
 
 void l4Tick(uint8_t ms);
 
-void l4CmtRx(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio);
+void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio);
 
 bool l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio);
 
 void writeValToPage(stream_t *s, uint8_t *val, uint8_t len);
+
+bool l4CmtRxPnding(L4Pkt* l4Pkt);
 #endif

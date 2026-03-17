@@ -14,18 +14,134 @@ void l1UARTTransferStopTx(UART_Type* UARTptr) {
 	UARTptr->C2 &= ~((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK);
 }
 
+//#if 0
+static inline void l1UartInitClock(UART_Type *UART)
+{
+	if (UART == UART0)
+	{
+		SIM->SCGC4 |= SIM_SCGC4_UART0_MASK;
+	}
+	else if (UART == UART1)
+	{
+		SIM->SCGC4 |= SIM_SCGC4_UART1_MASK;
+	}
+	else if (UART == UART2)
+	{
+		SIM->SCGC4 |= SIM_SCGC4_UART2_MASK;
+	}
+	else if (UART == UART3)
+	{
+		SIM->SCGC4 |= SIM_SCGC4_UART3_MASK;
+	}
+	else if (UART == UART4)
+	{
+		SIM->SCGC1 |= SIM_SCGC1_UART4_MASK;
+	}
+	else if (UART == UART5)
+	{
+		SIM->SCGC1 |= SIM_SCGC1_UART5_MASK;
+	}
+}
+//#endif
+
+static inline void l1UartEnable(UART_Type * UART)
+{
+	// Make sure transmitter and receiver are both disabled so can set the divisor
+	UART->C2 = 0;
+
+	// Set baud rate
+	// The over sampling rate is 16 so need to set SBR to clock ((96MHz / 2) / (16 * baud rate)) = 26.042 for (115200)
+	// Set the BDR to 26 with the BRFA to 1 = 26.03125 = 0.04% error
+
+	// Set baudrate registers (BDH and BDL)
+	// LBKDIE = 0 (hardware break interrupts disabled)
+	// RXEDGIE = 0 (hardware edge interrupts disabled)
+	// SBR = 26 (0 for high nibble of SBR)
+	UART->BDH = 0;
+	UART->BDL = 26;
+
+	// Set C1 register
+	// LOOPS = 0 (no loop)
+	// UARTSWAI = 0 (clock continues to runin wait mode)
+	// RSRC = 0 (no effect if no loop)
+	// M = 0 (8 bit characters)
+	// WAKE = 0 (Idle line wakeup)
+	// ILT = 0 (idle starts after start)
+	// PE = 0 (parity disabled)
+	// PT = 0 (even parity)
+	UART->C1 = 0;
+
+	// Set S2 register
+	// Clear all flags
+	// LBKDIF = 0 (clear flag)
+	// RXEDGIF = 0 (clear flag)
+	// MSBF = 0 (lsb first)
+	// RXINV = 0 (rx data not inverted)
+	// RWUID = 0 (idle bit not set when RWU = 1)
+	// BRK13 = 0 (break char is 10 bit times)
+	// LBKDE = 0 (break char detected at 10 bit times)
+	// RAF = 0 (clear flag)
+	UART->S2 = 0xC0;
+
+	// Set C3 register
+	// R8 = 0 (no r8 bits)
+	// T8 = 0 (no t8 bits)
+	// TXDIR = 0 (don't care because not doing single wire)
+	// TXINV = 0 (transmit data not inverted)
+	// ORIE = 0 (OR interrupt disabled)
+	// NEIE = 0 (NF interrupt disabled)
+	// FEIE = 0 (FE interrupt disabled)
+	// PEIE = 0 (PF interrupt disabled)
+	UART->C3 = 0;
+
+	// Set C4 register
+	// MAEN1 = 0 (match address 1 disabled)
+	// MAEN2 = 0 (match address 2 disabled)
+	// M10 = 0 (receive and transmit 8 or 9 bit)
+	// BRFA = 1 (1/32 added to brd)
+	UART->C4 = UART_C4_BRFA(1);
+
+	// Set C5 register
+	// TDMAS = 0 (tx DMA req disabled)
+	// RDMAS = 0 (rx DMA req disabled)
+	UART->C5 = 0;
+	
+	// set watermark
+	UART->TWFIFO = 0; /* TX watermark */
+	UART->RWFIFO = 1; /* RX watermark */
+
+	// Enable FIFOs
+	// TXFE = 1 (Transmit FIFO enabled)
+	// TXFIFOSIZE = 110b (128 words)
+	// RXFE = 1 (Receive FIFO enabled)
+	// RXFIFOSIZE = 110b (128 words)
+	UART->PFIFO = UART_PFIFO_TXFE_MASK | UART_PFIFO_RXFE_MASK;
+	
+	// flush the fifo
+	UART->CFIFO |= UART_CFIFO_TXFLUSH_MASK | UART_CFIFO_RXFLUSH_MASK;
+
+	
+	// Finally enable the receiver and interrupt
+	UART->C2 |= (UART_C2_RE_MASK | UART_C2_RIE_MASK);
+}
+
+static inline void l1UartInit(UART_Type *UART)
+{
+	l1UartInitClock(UART);
+	l1UartEnable(UART);
+}
+
 void l1Init(UART_Type* UARTPtr[MAX_PORT]) {
 
 	for (int port = 0; port < MAX_PORT; port++) {
-		UART[port] = UARTPtr[port];
-		UART[port]->C2 |= (UART_C2_RE_MASK | UART_C2_RIE_MASK);
 
-		// disable tx
-		l1UARTTransferStopTx(UART[port]);
+		if (UARTPtr[port]) {
+			l1UartInit(UARTPtr[port]);
+			UART[port] = UARTPtr[port];
 
-		txIndex[port] = 0;
-		rxIndex[port] = 0;
-		//init registers
+			txIndex[port] = 0;
+			rxIndex[port] = 0;
+		}
 	}
 }
 
@@ -68,7 +184,7 @@ void l1TxCmplt(uint8_t port) {
 	l2TxCmplt(port);
 }
 
-#ifndef UNIT_TEST
+#ifndef UNIT_TEST //pheripheral functions
 static void l1UARTWriteNonBlocking(UART_Type* UARTptr, const uint8_t* data, size_t length)
 {
 	assert(data != NULL);

@@ -4,15 +4,17 @@
 #include "layer1.h"
 #include "layer4.h"
 #include "allocator.h"
+#include "pmm.h"
 
 /* ----------------------------- configuration ---------------------------- */
 // TODO move to cfg
-uint16_t myPos;
-NodeCfg topology[MAX_POS];
+PosType_t myPos = MAX_POS;
+NodeCfg_t topology[MAX_POS];
 
 
 #define INVALID_SUBNET   0u
 #define INVALID_GATEWAY  0u
+#define INVALID_POS MAX_POS
 #define DIRECT_GATEWAY   0u
 
 #define INF_HOPS            0xFFu
@@ -31,11 +33,51 @@ NodeCfg topology[MAX_POS];
  */
 typedef struct
 {
-    uint8_t  hops[MAX_SUBNET];
-    uint8_t  prevSubnet[MAX_SUBNET];
+    uint8_t hops[MAX_SUBNET];
+    uint8_t prevSubnet[MAX_SUBNET];
+    PosType_t prevPeerPos[MAX_SUBNET];
     uint16_t firstGw[MAX_SUBNET];
     uint32_t cost[MAX_SUBNET];
 } RouteScratch;
+
+/* ------------------------------ RAM USAGE GATING ------------------------------- */
+
+#define RAM_BUDGET_BYTES (20u * 1024u)
+
+/* setPortAddr() locals */
+#define SETPORT_LOCAL_BYTES \
+    (sizeof(uint16_t[MAX_SUBNET]) + sizeof(uint16_t[MAX_POS][MAX_PORT]))
+
+/* solve_global_bus_load() locals */
+#define SOLVE_LOCAL_BYTES           \
+    (sizeof(uint16_t[MAX_SUBNET]) + \
+     sizeof(uint16_t[MAX_SUBNET]) + \
+     sizeof(RouteScratch) +         \
+     sizeof(PosType_t[MAX_POS]))
+
+/* Worst nested stack peak: setPortAddr() -> solve_global_bus_load() */
+#define PEAK_STACK_BYTES \
+    (SETPORT_LOCAL_BYTES + SOLVE_LOCAL_BYTES)
+
+/* Persistent RAM used by shown globals */
+#define PERSISTENT_RAM_BYTES             \
+    (sizeof(myPos) +                     \
+     sizeof(topology) +                  \
+     sizeof(l3RouteTable) +              \
+     sizeof(l3RouteHops) +               \
+     sizeof(l3AddrTblPrio) +             \
+     sizeof(l3BcastInSubnetForSrcPort) + \
+     sizeof(maxL2Addr))
+
+/* Approx total RAM consumed while setPortAddr() is active */
+#define TOTAL_RAM_EST_BYTES \
+    (PEAK_STACK_BYTES + PERSISTENT_RAM_BYTES)
+
+_Static_assert(PEAK_STACK_BYTES <= RAM_BUDGET_BYTES,
+               "Routing stack usage exceeds 20 KB");
+
+_Static_assert(TOTAL_RAM_EST_BYTES <= RAM_BUDGET_BYTES,
+               "Routing total RAM estimate exceeds 20 KB");
 
 /* ------------------------------ utilities ------------------------------- */
 
@@ -81,14 +123,16 @@ static bool node_has_subnet(int pos, uint8_t subnet)
     return false;
 }
 
-static uint8_t build_used_pos_list(uint8_t usedPos[MAX_POS])
+static PosType_t build_used_pos_list(PosType_t usedPos[MAX_POS])
 {
-    uint8_t count = 0;
+    PosType_t count = 0;
     int pos;
 
-    for (pos = 1; pos < MAX_POS; pos++) {
-        if (node_is_used(pos)) {
-            usedPos[count++] = (uint8_t)pos;
+    for (pos = 1; pos < MAX_POS; pos++)
+    {
+        if (node_is_used(pos))
+        {
+            usedPos[count++] = (PosType_t)pos;
         }
     }
 
@@ -105,6 +149,7 @@ static void assign_l3_addresses(uint16_t l3AddrTable[MAX_POS][MAX_PORT])
 
     memset(hostId, 0, sizeof(hostId));
     memset(l3AddrTable, 0, sizeof(uint16_t) * MAX_POS * MAX_PORT);
+    memset(maxL2Addr, 0, sizeof(maxL2Addr));
 
     for (pos = 1; pos < MAX_POS; pos++) {
         for (port = 0; port < MAX_PORT; port++) {
@@ -122,10 +167,13 @@ static void assign_l3_addresses(uint16_t l3AddrTable[MAX_POS][MAX_PORT])
 
     for (port = 0; port < MAX_PORT; port++) {
         uint8_t subnet = topology[myPos].subnet[port];
+        
+//#ifndef IS_DEBUG // allow debug port access
         if (hostId[subnet] <= 1) { // if we have only one device in bus disable the bus
             l3AddrTable[myPos][port] = 0;
         }
         else {
+//#endif
             maxL2Addr[port] = hostId[subnet];
         }
     }
@@ -142,11 +190,11 @@ static void assign_l3_addresses(uint16_t l3AddrTable[MAX_POS][MAX_PORT])
  *   2) minimum total traversed-subnet load
  */
 static void compute_routes_for_pos(int srcPos,
-    const uint16_t l3AddrTable[MAX_POS][MAX_PORT],
-    const uint16_t busLoad[MAX_SUBNET],
-    const uint8_t usedPos[MAX_POS],
-    uint8_t usedCount,
-    RouteScratch* rs)
+                                   const uint16_t l3AddrTable[MAX_POS][MAX_PORT],
+                                   const uint16_t busLoad[MAX_SUBNET],
+                                   const PosType_t usedPos[MAX_POS],
+                                   PosType_t usedCount,
+                                   RouteScratch *rs)
 {
     int s;
     uint8_t passIdx;
@@ -154,6 +202,7 @@ static void compute_routes_for_pos(int srcPos,
     for (s = 0; s < MAX_SUBNET; s++) {
         rs->hops[s] = INF_HOPS;
         rs->prevSubnet[s] = INVALID_SUBNET;
+        rs->prevPeerPos[s] = INVALID_POS;
         rs->firstGw[s] = INVALID_GATEWAY;
         rs->cost[s] = INF_COST;
     }
@@ -171,6 +220,7 @@ static void compute_routes_for_pos(int srcPos,
 
             rs->hops[subnet] = 0u;
             rs->prevSubnet[subnet] = INVALID_SUBNET;
+            rs->prevPeerPos[subnet] = INVALID_POS;
             rs->firstGw[subnet] = DIRECT_GATEWAY;
             rs->cost[subnet] = (uint32_t)busLoad[subnet];
         }
@@ -182,7 +232,7 @@ static void compute_routes_for_pos(int srcPos,
      */
     for (passIdx = 0; passIdx < (uint8_t)(MAX_SUBNET - 1u); passIdx++) {
         bool changed = false;
-        uint8_t ui;
+        PosType_t ui;
 
         for (ui = 0; ui < usedCount; ui++) {
             int peerPos = usedPos[ui];
@@ -230,6 +280,7 @@ static void compute_routes_for_pos(int srcPos,
                                              rs->cost[outSubnet])) {
                                 rs->hops[outSubnet] = newHops;
                                 rs->prevSubnet[outSubnet] = inSubnet;
+                                rs->prevPeerPos[outSubnet] = peerPos;
                                 rs->firstGw[outSubnet] = newFirstGw;
                                 rs->cost[outSubnet] = newCost;
                                 changed = true;
@@ -336,8 +387,8 @@ static void solve_global_bus_load(const uint16_t l3AddrTable[MAX_POS][MAX_PORT],
     uint16_t busLoad[MAX_SUBNET];
     uint16_t nextBusLoad[MAX_SUBNET];
     RouteScratch rs;
-    uint8_t usedPos[MAX_POS];
-    uint8_t usedCount;
+    PosType_t usedPos[MAX_POS];
+    PosType_t usedCount;
     uint8_t passIdx;
 
     usedCount = build_used_pos_list(usedPos);
@@ -345,13 +396,13 @@ static void solve_global_bus_load(const uint16_t l3AddrTable[MAX_POS][MAX_PORT],
     memset(busLoad, 0, sizeof(busLoad));
 
     for (passIdx = 0; passIdx < MAX_GLOBAL_PASSES; passIdx++) {
-        uint8_t ui;
+        PosType_t ui;
 
         memset(nextBusLoad, 0, sizeof(nextBusLoad));
 
         for (ui = 0; ui < usedCount; ui++) {
             int srcPos = usedPos[ui];
-            uint8_t uj;
+            PosType_t uj;
 
             compute_routes_for_pos(srcPos, l3AddrTable, busLoad, usedPos, usedCount, &rs);
 
@@ -385,31 +436,39 @@ static void solve_global_bus_load(const uint16_t l3AddrTable[MAX_POS][MAX_PORT],
 /* ------------------------- final myPos route row ------------------------ */
 
 static void build_route_row_for_my_pos(const uint16_t l3AddrTable[MAX_POS][MAX_PORT],
-    const uint16_t busLoad[MAX_SUBNET])
+                                       const uint16_t busLoad[MAX_SUBNET])
 {
     RouteScratch rs;
-    uint8_t usedPos[MAX_POS];
-    uint8_t usedCount;
+    PosType_t usedPos[MAX_POS];
+    PosType_t usedCount;
     int subnet;
 
     usedCount = build_used_pos_list(usedPos);
 
-    for (subnet = 0; subnet < MAX_SUBNET; subnet++) {
+    for (subnet = 0; subnet < MAX_SUBNET; subnet++)
+    {
         l3RouteTable[subnet] = INVALID_GATEWAY;
+        l3RouteHops[subnet] = INF_HOPS;
     }
 
-    if ((myPos == 0u) || (myPos >= MAX_POS) || !node_is_used((int)myPos)) {
+    if ((myPos == 0u) || (myPos >= MAX_POS) || !node_is_used((int)myPos))
+    {
         return;
     }
 
     compute_routes_for_pos((int)myPos, l3AddrTable, busLoad, usedPos, usedCount, &rs);
 
-    for (subnet = 1; subnet < MAX_SUBNET; subnet++) {
-        if (rs.hops[subnet] == INF_HOPS) {
+    for (subnet = 1; subnet < MAX_SUBNET; subnet++)
+    {
+        if (rs.hops[subnet] == INF_HOPS)
+        {
             l3RouteTable[subnet] = INVALID_GATEWAY;
+            l3RouteHops[subnet] = INF_HOPS;
         }
-        else {
+        else
+        {
             l3RouteTable[subnet] = rs.firstGw[subnet];
+            l3RouteHops[subnet] = (uint16_t)rs.hops[subnet];
         }
     }
 }
@@ -438,13 +497,71 @@ static bool better_dest_addr(uint8_t newHops,
     return (newAddr < oldAddr);
 }
 
+static void build_broadcast_forward_info_for_my_pos(
+    const uint16_t l3AddrTable[MAX_POS][MAX_PORT],
+    const uint16_t busLoad[MAX_SUBNET])
+{
+    RouteScratch rs;
+    PosType_t usedPos[MAX_POS];
+    PosType_t usedCount;
+    PosType_t ui;
+    int outPort;
+
+    usedCount = build_used_pos_list(usedPos);
+
+    memset(l3BcastInSubnetForSrcPort, 0, sizeof(l3BcastInSubnetForSrcPort));
+
+    if ((myPos == 0u) || (myPos >= MAX_POS) || !node_is_used((int)myPos))
+    {
+        return;
+    }
+
+    for (ui = 0; ui < usedCount; ui++)
+    {
+        int srcPos = usedPos[ui];
+
+        if (srcPos == (int)myPos)
+        {
+            continue; /* local-origin broadcast handled separately */
+        }
+
+        compute_routes_for_pos(srcPos, l3AddrTable, busLoad, usedPos, usedCount, &rs);
+
+        for (outPort = 0; outPort < MAX_PORT; outPort++)
+        {
+            uint8_t outSubnet = topology[myPos].subnet[outPort];
+
+            if (outSubnet == INVALID_SUBNET)
+            {
+                continue;
+            }
+
+            if (rs.hops[outSubnet] == INF_HOPS)
+            {
+                continue;
+            }
+
+            /*
+             * myPos is the designated forwarder into outSubnet only if the
+             * chosen shortest-path tree enters outSubnet through myPos.
+             */
+            if ((rs.prevPeerPos[outSubnet] == myPos) &&
+                (rs.prevSubnet[outSubnet] != INVALID_SUBNET))
+            {
+                l3BcastInSubnetForSrcPort[srcPos][outPort] =
+                    rs.prevSubnet[outSubnet];
+            }
+        }
+    }
+}
+
 static void build_ordered_dst_addr_for_my_pos(
     const uint16_t l3AddrTable[MAX_POS][MAX_PORT],
     const uint16_t busLoad[MAX_SUBNET])
 {
     RouteScratch rs;
-    uint8_t usedPos[MAX_POS];
-    uint8_t usedCount;
+    PosType_t usedPos[MAX_POS];
+    PosType_t usedCount;
     int dstPos;
 
     usedCount = build_used_pos_list(usedPos);
@@ -528,7 +645,7 @@ static void build_ordered_dst_addr_for_my_pos(
     }
 }
 
-void setPortAddr(void)
+static void setPortAddr(void)
 {
     uint16_t finalBusLoad[MAX_SUBNET];
     uint16_t l3AddrTable[MAX_POS][MAX_PORT];
@@ -537,596 +654,30 @@ void setPortAddr(void)
     solve_global_bus_load(l3AddrTable, finalBusLoad);
     build_route_row_for_my_pos(l3AddrTable, finalBusLoad);
     build_ordered_dst_addr_for_my_pos(l3AddrTable, finalBusLoad);
+    build_broadcast_forward_info_for_my_pos(l3AddrTable, finalBusLoad);
     return;
 }
 
-#if 0
-void setPortAddr() {
-    // set port addr
-    uint8_t l2Addr[MAX_SUBNET];
-    memset(l2Addr, 0, (MAX_POS * MAX_PORT));
-
-    uint8_t busLoad[MAX_SUBNET];
-    memset(busLoad, 0, MAX_SUBNET);
-
-    memset(l3RouteTableTest, 0, (MAX_POS*MAX_SUBNET));
-
-    // TODO pos to be 0 indexed in topology ?
-    for (int pos = 1; pos < MAX_POS; pos++) {
-
-#if 0
-        uint8_t subnetHop[MAX_SUBNET];
-        memset(subnetHop, 0xFF, MAX_SUBNET);
-
-        uint16_t subnetGateways[MAX_SUBNET][MAX_POS];
-        uint8_t subnetGatewayCnt[MAX_SUBNET];
-        memset(subnetGatewayCnt, 0x0, MAX_SUBNET);
-#endif
-        // first compute addresses 
-        for (int peerPos = 1; peerPos < MAX_POS; peerPos++) {
-            if (pos == peerPos) {
-                for (int port = 0; port < MAX_PORT; port++) {
-                    uint8_t subnet = topology[pos].subnet[port];
-                    if (!subnet) {
-                        continue;
-                    }
-
-                    l2Addr[subnet]++;
-                    l3AddrTableTest[pos][port] = (subnet << 8) | l2Addr[subnet]; // give addr
-                }
-                continue;
-            }
-#if 0
-            /* resolve local reachable */
-            uint8_t unReachableSubnetCnt = 0;
-            uint8_t unReachableSubnet[MAX_SUBNET];
-
-            //uint8_t reachableSubnetCnt = 0;
-            //uint8_t reachableSubnet[MAX_SUBNET];
-
-            uint8_t distantSubnetCnt = 0;
-            uint8_t distantSubnet[MAX_SUBNET];
-
-            uint8_t localGatewayCnt = 0;
-            uint16_t localGateway[MAX_SUBNET];
-#endif
-            uint8_t localGatewayCnt = 0;
-            uint8_t prefTxIdx;
-            uint8_t prefTxtxLoad;
-
-            for (int peerPort = 0; peerPort < MAX_PORT; peerPort++) {
-                uint8_t peerSubnet = topology[peerPos].subnet[peerPort];
-
-                if (!peerSubnet) {
-                    continue;
-                }
-
-                l2Addr[peerSubnet]++;
-                l3AddrTableTest[peerPos][peerPort] = (peerSubnet << 8) | l2Addr[peerSubnet]; // give addr
-
-                bool isDistantSubnet = true;
-
-                for (int port = 0; port < MAX_PORT; port++) {
-                    uint8_t mySubnet = topology[pos].subnet[port];
-                    if (!mySubnet) {
-                        continue;
-                    }
-
-                    if (mySubnet == peerSubnet) {
-                        isDistantSubnet = false;
-                        break;
-                    }
-                }
-
-                if (isDistantSubnet) {
-                    // set as possible gateway for this distant subnet
-#if 0
-                    distantSubnet[distantSubnetCnt++] = peerSubnet;
-#endif
-                }
-                else {
-                    if (!localGatewayCnt) {
-                        prefTxIdx = peerPort;
-                        prefTxtxLoad = busLoad[peerSubnet];
-                    }
-                    else if (busLoad[peerSubnet] < prefTxtxLoad) { // chose lowest loaded subnet
-                        prefTxIdx = peerPort;
-                        prefTxtxLoad = busLoad[peerSubnet];
-                    }
-#if 0
-                    subnetHop[peerSubnet] = 0;
-                    localGateway[localGatewayCnt++] = l3AddrTableTest[peerPos][peerPort];
-#endif
-                    localGatewayCnt++;
-                }
-            }
-
-            if (localGatewayCnt > 0) { // single hop 
-                // increase the load for desired tx for the pos
-                busLoad[topology[peerPos].subnet[prefTxIdx]]++;
-#if 0
-                for (uint8_t distantSubnetIdx = 0; distantSubnetIdx < distantSubnetCnt; distantSubnetIdx++) { // for distant subnets all possible local gateway
-                    const uint8_t currDistantSubnet = distantSubnet[distantSubnetIdx];
-                    subnetHop[currDistantSubnet] = 1;
-
-                    for (uint8_t localGatewayIdx = 0; localGatewayIdx < localGatewayCnt; localGatewayIdx++) {
-                        const uint16_t currlocalGateway = localGateway[localGatewayIdx];
-                        const uint8_t currSubnetGatewayCnt = subnetGatewayCnt[currDistantSubnet];
-
-                        subnetGateways[currDistantSubnet][currSubnetGatewayCnt] = currlocalGateway;
-                        subnetGatewayCnt[currDistantSubnet]++;
-                    }
-                }
-#endif
-            }
-            else {
-
-#if 0
-
-                for (uint8_t distantSubnetIdx = 0; distantSubnetIdx < distantSubnetCnt; distantSubnetIdx++) {
-                    const uint8_t currDistantSubnet = distantSubnet[distantSubnetIdx];
-
-                    if (subnetHop[currDistantSubnet] == 1) { // we dont want to get a gateway from another distant subnet that will add hops
-                        continue;
-                    }
-
-                     for (uint8_t distantSubnetIdx2 = 0; distantSubnetIdx2 < distantSubnetCnt; distantSubnetIdx2++) {
-                         if (distantSubnetIdx == distantSubnetIdx2) {
-                             continue;
-                         }
-                         const uint8_t currDistantSubnet2 = distantSubnet[distantSubnetIdx2];
-                         // if another distant subnet in pos has a local gateway to it, pass its distinct gateways
-                         if (subnetGatewayCnt[currDistantSubnet2]) {
-
-                             uint16_t selectedGateways[MAX_SUBNET];
-                             for (uint8_t subnetGatewayIdx2 = 0; subnetGatewayIdx2 < subnetGatewayCnt[currDistantSubnet2]; subnetGatewayIdx2++) { // local gateways of idx 2
-                                 bool distinctGateway = true;
-                                 for (uint8_t subnetGatewayIdx = 0; subnetGatewayIdx < subnetGatewayCnt[currDistantSubnet]; subnetGatewayIdx++) { // local gateways of idx 1
-                                     if (subnetGateways[currDistantSubnet][subnetGatewayIdx] ==
-                                         subnetGateways[currDistantSubnet2][subnetGatewayIdx2]) {
-                                         distinctGateway = false;
-                                         break;
-                                     }
-                                 }
-                                 
-                                 if (distinctGateway) {
-                                     uint8_t newHop = subnetHop[currDistantSubnet2] + 1; // this is new hop if we add this local gateway from a distant subnet
-
-                                     if (subnetHop[currDistantSubnet] > newHop) { // clear old gateways since we have found a lower hop gateway
-                                         subnetGatewayCnt[currDistantSubnet] = 0;
-                                         subnetGateways[currDistantSubnet][0] = subnetGateways[currDistantSubnet2][subnetGatewayIdx2];
-                                         subnetHop[currDistantSubnet] = newHop;
-                                     }
-                                     else if (subnetHop[currDistantSubnet] == newHop) { // samehop gateway subnet append to subnets
-                                         subnetGateways[currDistantSubnet][subnetGatewayCnt[currDistantSubnet]++] = subnetGateways[currDistantSubnet2][subnetGatewayIdx2];
-                                     }
-                                 }
-                             }
-                         }
-                     }
-                }
-#endif
-            }
-            // try to resolve unreachable subnets with gateways
-
-        }
-
-#if 0
-        if (pos == myPos) { // end route computation
-            break;
-        }
-#endif
-    }
-
-    // route table computation
-    for (int pos = 1; pos < MAX_POS; pos++) {
-
-        uint8_t subnetHop[MAX_SUBNET];
-        memset(subnetHop, 0xFF, MAX_SUBNET);
-
-        uint16_t subnetGateways[MAX_SUBNET][MAX_POS];
-        uint8_t subnetGatewayCnt[MAX_SUBNET];
-        memset(subnetGatewayCnt, 0x0, MAX_SUBNET);
-
-        // first compute addresses 
-        for (int peerPos = 1; peerPos < MAX_POS; peerPos++) {
-            if (pos == peerPos) {
-                continue;
-            }
-
-            /* resolve local reachable */
-            uint8_t unReachableSubnetCnt = 0;
-            uint8_t unReachableSubnet[MAX_SUBNET];
-
-            //uint8_t reachableSubnetCnt = 0;
-            //uint8_t reachableSubnet[MAX_SUBNET];
-
-            uint8_t distantSubnetCnt = 0;
-            uint8_t distantSubnet[MAX_SUBNET];
-
-            uint8_t localGatewayCnt = 0;
-            uint16_t localGateway[MAX_SUBNET];
-
-
-            for (int peerPort = 0; peerPort < MAX_PORT; peerPort++) {
-                uint8_t peerSubnet = topology[peerPos].subnet[peerPort];
-
-                if (!peerSubnet) {
-                    continue;
-                }
-
-                bool isDistantSubnet = true;
-
-                for (int port = 0; port < MAX_PORT; port++) {
-                    uint8_t mySubnet = topology[pos].subnet[port];
-                    if (!mySubnet) {
-                        continue;
-                    }
-
-                    if (mySubnet == peerSubnet) {
-                        isDistantSubnet = false;
-                        break;
-                    }
-                }
-
-                if (isDistantSubnet) {
-                    // set as possible gateway for this distant subnet
-                    distantSubnet[distantSubnetCnt++] = peerSubnet;
-                }
-                else {
-
-                    subnetHop[peerSubnet] = 0;
-                    localGateway[localGatewayCnt++] = l3AddrTableTest[peerPos][peerPort];
-                }
-            }
-
-            if (localGatewayCnt > 0) { // single hop 
-
-                for (uint8_t distantSubnetIdx = 0; distantSubnetIdx < distantSubnetCnt; distantSubnetIdx++) { // for distant subnets all possible local gateway
-                    const uint8_t currDistantSubnet = distantSubnet[distantSubnetIdx];
-                    subnetHop[currDistantSubnet] = 1;
-
-                    for (uint8_t localGatewayIdx = 0; localGatewayIdx < localGatewayCnt; localGatewayIdx++) {
-                        const uint16_t currlocalGateway = localGateway[localGatewayIdx];
-                        const uint8_t currSubnetGatewayCnt = subnetGatewayCnt[currDistantSubnet];
-
-                        subnetGateways[currDistantSubnet][currSubnetGatewayCnt] = currlocalGateway;
-                        subnetGatewayCnt[currDistantSubnet]++;
-                    }
-                }
-            }
-            else {
-
-#if 0
-                if (distantSubnetCnt == 1) { // we can only reach this pos on this port address
-                    busLoad[distantSubnet[0]]++; // tx from pos to peer pos on distant subnet
-                    continue;
-                }
-#endif
-
-                for (uint8_t distantSubnetIdx = 0; distantSubnetIdx < distantSubnetCnt; distantSubnetIdx++) {
-                    const uint8_t currDistantSubnet = distantSubnet[distantSubnetIdx];
-
-                    if (subnetHop[currDistantSubnet] == 1) { // we dont want to get a gateway from another distant subnet that will add hops
-                        continue;
-                    }
-
-                    for (uint8_t distantSubnetIdx2 = 0; distantSubnetIdx2 < distantSubnetCnt; distantSubnetIdx2++) {
-                        if (distantSubnetIdx == distantSubnetIdx2) {
-                            continue;
-                        }
-                        const uint8_t currDistantSubnet2 = distantSubnet[distantSubnetIdx2];
-                        // if another distant subnet in pos has a local gateway to it, pass its distinct gateways
-                        if (subnetGatewayCnt[currDistantSubnet2]) {
-
-                            uint16_t selectedGateways[MAX_SUBNET];
-                            for (uint8_t subnetGatewayIdx2 = 0; subnetGatewayIdx2 < subnetGatewayCnt[currDistantSubnet2]; subnetGatewayIdx2++) { // local gateways of idx 2
-                                bool distinctGateway = true;
-                                for (uint8_t subnetGatewayIdx = 0; subnetGatewayIdx < subnetGatewayCnt[currDistantSubnet]; subnetGatewayIdx++) { // local gateways of idx 1
-                                    if (subnetGateways[currDistantSubnet][subnetGatewayIdx] ==
-                                        subnetGateways[currDistantSubnet2][subnetGatewayIdx2]) {
-                                        distinctGateway = false;
-                                        break;
-                                    }
-                                }
-
-                                if (distinctGateway) {
-                                    uint8_t newHop = subnetHop[currDistantSubnet2] + 1; // this is new hop if we add this local gateway from a distant subnet
-
-                                    if (subnetHop[currDistantSubnet] > newHop) { // clear old gateways since we have found a lower hop gateway
-                                        subnetGatewayCnt[currDistantSubnet] = 0;
-                                        subnetGateways[currDistantSubnet][0] = subnetGateways[currDistantSubnet2][subnetGatewayIdx2];
-                                        subnetHop[currDistantSubnet] = newHop;
-                                    }
-                                    else if (subnetHop[currDistantSubnet] == newHop) { // samehop gateway subnet append to subnets
-                                        subnetGateways[currDistantSubnet][subnetGatewayCnt[currDistantSubnet]++] = subnetGateways[currDistantSubnet2][subnetGatewayIdx2];
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // try to resolve unreachable subnets with gateways
-        }
-
-        for (int peerPos = 1; peerPos < MAX_POS; peerPos++) {
-            bool remoteDev = false;
-
-            uint8_t remoteBusLoad = 0xFF;
-            uint16_t selectedGateway = 0x0;
-
-            for (int peerPort = 0; peerPort < MAX_PORT; peerPort++) {
-                uint8_t peerSubnet = topology[peerPos].subnet[peerPort];
-
-                for (int port = 0; port < MAX_PORT; port++) {
-                    if (peerSubnet == topology[pos].subnet[port]) {
-                        remoteDev = false;
-                        break;
-                    }
-                }
-
-                if (!remoteDev) {
-                    break;
-                }
-
-                //select lowest loaded gateway traverse every path
-                for (uint8_t subnetGatewayIdx = 0; subnetGatewayIdx < subnetGatewayCnt[peerSubnet]; subnetGatewayIdx++) {
-                    uint8_t currsubnetGateway = subnetGateways[subnetGatewayIdx];
-                    uint8_t subnetLoad = busLoad[subnetGateways[peerSubnet][subnetGatewayIdx]];
-
-                    if (remoteBusLoad <= subnetLoad) {
-                        continue;
-                    }
-
-                    while (subnetHop[currsubnetGateway] < 1) { // single hop gateways already resolved and selected for
-
-                        for (uint8_t subnetGatewayIdx2 = 0; subnetGatewayIdx2 < subnetGatewayCnt[currsubnetGateway]; subnetGatewayIdx2++) {
-                            uint8_t currsubnetGateway2 = subnetGateways[subnetGatewayIdx2];
-                            uint8_t subnetLoad2 = busLoad[subnetGateways[currsubnetGateway][subnetGatewayIdx2]];
-
-                        }
-                    }
-
-                   
-                    if (remoteBusLoad > subnetLoad) {
-                        // compute total load to reach device from this subnet
-
-                    }
-                }
-            }
-        }
-
-        if (pos == myPos) { // end route computation
-            break;
-        }
-    }
-
-#if 0
-    memset(l3AddrTableTest, 0, (MAX_POS * MAX_PORT));
-    
-
-    uint8_t reachableSubnetCnt = MAX_PORT;
-    uint8_t reachableSubnet[MAX_SUBNET];
-    for (uint8_t port = 0; port < MAX_PORT; port++) {
-        const uint8_t subnet = topology[myPos].subnet[port];
-        subnetHop[subnet] = 0;
-        reachableSubnet[port] = subnet;
-    }
-
-    uint8_t unReachableSubnetCnt = 0;
-    uint8_t unReachableSubnet[MAX_SUBNET];
-
-    for (int pos = 0; pos < MAX_POS; pos++) {
-        for (uint8_t port = 0; port < MAX_PORT; port++) {
-            const uint8_t subnet = topology[pos].subnet[port];
-            l3AddrTableTest[pos][port] = (subnet << 8) | l2Addr[subnet][port];
-
-            if (pos != myPos) {
-
-                uint8_t subnetIdx = 0;
-                uint8_t load = busLoad[reachableSubnet[subnetIdx++]];
-                for (; subnetIdx < reachableSubnetCnt; subnetIdx) {
-                    if (load < )
-                }
-
-                bool unreachable = true;
-                for (uint8_t myPort = 0; myPort < MAX_PORT; myPort++) {
-                    if (subnet == topology[myPos].subnet[myPort]) {
-                        unreachable = false;
-                    }
-                }
-
-                if (unreachable) { // localy unreachable
-                    // check existing reachable
-
-                }
-                if (unreachable) {
-                    // select best route to reach subnet
-                    uint8_t subnetIdx = 0;
-                    uint8_t load = busLoad[reachableSubnet[subnetIdx]];
-                    for (; subnetIdx < reachableSubnetCnt; subnetIdx) {
-
-                    }
-                }
-            }
-        }
-
-        if (pos == myPos) {
-            for (uint8_t port = 0; port < MAX_PORT; port++) {
-                const uint8_t subnet = topology[pos].subnet[port];
-                port_addr[port] = (subnet << 8) | l2Addr[subnet][port];
-                l2Addr[subnet][port]++;
-            }
-        }
-        else {
-            bool unreachable = true;
-            for (int peerPort = 0; peerPort < MAX_PORT; peerPort++) {
-                const uint8_t subnet = topology[pos].subnet[peerPort];
-                l3AddrTableTest[pos][peerPort] = (topology[pos].subnet[peerPort] << 8) | l2Addr[port];
-                for (uint8_t port = 0; port < MAX_PORT; port++) {
-                    if (topology[pos].subnet[peerPort] == topology[myPos].subnet[port]) {
-                        unreachable = false;
-                    }
-                }
-            }
-        }
-    }
-#endif
-}
-#endif
-
-#if 0
-
-void setPortAddr() {
-    // set port addr
-    uint8_t l2Addr[MAX_SUBNET][MAX_PORT];
-    memset(l2Addr, 1, (MAX_POS * MAX_PORT));
-
-    uint8_t busLoad[MAX_SUBNET];
-    memset(busLoad, 0, MAX_SUBNET);
-
-    memset(l3AddrTableTest, 0, (MAX_POS * MAX_PORT));
-    uint8_t subnetHop[MAX_SUBNET];
-    memset(subnetHop, 0xFF, MAX_SUBNET);
-
-    uint8_t reachableSubnetCnt = MAX_PORT;
-    uint8_t reachableSubnet[MAX_SUBNET];
-    for (uint8_t port = 0; port < MAX_PORT; port++) {
-        const uint8_t subnet = topology[myPos].subnet[port];
-        subnetHop[subnet] = 0;
-        reachableSubnet[port] = subnet;
-    }
-
-    uint8_t unReachableSubnetCnt = 0;
-    uint8_t unReachableSubnet[MAX_SUBNET];
-
-    for (int pos = 0; pos < MAX_POS; pos++) {
-        for (uint8_t port = 0; port < MAX_PORT; port++) {
-            const uint8_t subnet = topology[pos].subnet[port];
-            l3AddrTableTest[pos][port] = (subnet << 8) | l2Addr[subnet][port];
-
-            if (pos != myPos) {
-
-                uint8_t subnetIdx = 0;
-                uint8_t load = busLoad[reachableSubnet[subnetIdx++]];
-                for (; subnetIdx < reachableSubnetCnt; subnetIdx) {
-                    if (load < )
-                }
-
-                bool unreachable = true;
-                for (uint8_t myPort = 0; myPort < MAX_PORT; myPort++) {
-                    if (subnet == topology[myPos].subnet[myPort]) {
-                        unreachable = false;
-                    }
-                }
-
-                if (unreachable) { // localy unreachable
-                    // check existing reachable
-                    
-                }
-                if (unreachable) {
-                    // select best route to reach subnet
-                    uint8_t subnetIdx = 0;
-                    uint8_t load = busLoad[reachableSubnet[subnetIdx]];
-                    for (; subnetIdx < reachableSubnetCnt; subnetIdx) {
-
-                    }
-                }
-            }
-        }
-
-        if (pos == myPos) {
-            for (uint8_t port = 0; port < MAX_PORT; port++) {
-                const uint8_t subnet = topology[pos].subnet[port];
-                port_addr[port] = (subnet << 8) | l2Addr[subnet][port];
-                l2Addr[subnet][port]++;
-            }
-        }
-        else {
-            bool unreachable = true;
-            for (int peerPort = 0; peerPort < MAX_PORT; peerPort++) {
-                const uint8_t subnet = topology[pos].subnet[peerPort];
-                l3AddrTableTest[pos][peerPort] = (topology[pos].subnet[peerPort] << 8) | l2Addr[port];
-                for (uint8_t port = 0; port < MAX_PORT; port++) {
-                    if (topology[pos].subnet[peerPort] == topology[myPos].subnet[port]) {
-                        unreachable = false;
-                    }
-                }
-            }
-        }
-    }
-}
-
-
-void setPortAddr() {
-    // set port addr
-    uint8_t l2Addr[MAX_PORT] = { 
-        (topology[myPos].subnet[0] == 0) ? 0 : 1, 
-        (topology[myPos].subnet[1] == 0) ? 0 : 1 
-    };
-
-    uint8_t busLoad[MAX_SUBNET];
-    memset(busLoad, 0, MAX_SUBNET);
-
-    memset(l3AddrTableTest, 0, (MAX_POS * MAX_PORT));
-    uint8_t subnetHop[MAX_SUBNET];
-    memset(subnetHop, 0xFF, MAX_SUBNET);
-
-    for (uint8_t port = 0; port < MAX_PORT; port++) {
-        subnetHop[topology[myPos].subnet[port]] = 0;
-    }
-
-    for (int pos = 0; pos < MAX_POS; pos++) {
-        if (pos == myPos) {
-            for (uint8_t port = 0; port < MAX_PORT; port++) {
-                port_addr[port] = (topology[pos].subnet[port] << 8) | l2Addr[port];
-            }
-        }
-        else {
-            bool unreachable = true;
-            for (int peerPort = 0; peerPort < MAX_PORT; peerPort++) {
-                for (uint8_t port = 0; port < MAX_PORT; port++) {
-                    if (topology[pos].subnet[peerPort] == topology[myPos].subnet[port]) {
-                        unreachable = false;
-                    }
-                }
-            }
-
-            // one subnet directly reachable
-            for (uint8_t port = 0; port < MAX_PORT; port++) {
-                if (topology[myPos].subnet[port] == 0) {
-                    continue;
-                }
-
-                for (int peerPort = 0; peerPort < MAX_PORT; peerPort++) {
-                    l3AddrTableTest[pos][peerPort] = (topology[pos].subnet[port] << 8) | l2Addr[port];
-                    if (topology[pos].subnet[peerPort] == topology[myPos].subnet[port]) {
-                        // for now set addr directly (TODO loadbalance equal hops + routing table gateway)
-                        //streams[pos].gateway = streams[pos].dst = (topology[pos].subnet[port] << 8) | l2Addr[port];
-                        l3RouteTable[pos] = 
-                        l3AddrTable[pos] = (topology[pos].subnet[port] << 8) | l2Addr[port];
-
-                        l2Addr[port]++;
-
-                        l3RouteTableTest[pos][peerPort] = l3AddrTableTest[pos][peerPort];
-                    }
-                }
-            }
-        }
-    }
-
-    for (uint8_t port = 0; port < MAX_PORT; port++) { // max addr for MST rollover
-        maxL2Addr[port] = l2Addr[port];
-        if (maxL2Addr[port] <= 1) { // deactivate port if only single device
-            port_addr[port] = 0;
-        }
-    }
-}
-#endif
 void netInit(UART_Type* UART[MAX_PORT]) {
     pages_init();
-    setPortAddr();
+
+    if (g_pmm.config) // config is present
+    {
+        // copy once from config to avoid repeated access (TODO access from flex ram ? )
+        myPos = g_pmm.config->pos;
+        memcpy(topology, g_pmm.config->topology, sizeof(topology));
+        
+        // disable subnets with no UART
+        for (int port = 0; port < MAX_PORT; port++) {
+            if (!UART[port])
+            {
+                topology[myPos].subnet[port] = INVALID_SUBNET;
+            }
+        }
+        
+        setPortAddr();
+    }
+    
     l1Init(UART);
 	l2Init();
 	l3Init();

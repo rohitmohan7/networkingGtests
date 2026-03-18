@@ -313,6 +313,12 @@ static inline bool l3PushFrwdPkt(L3Pkt * const l3Pkt, const uint8_t port)
 	memcpy(&l3FrwdPkt->hdr, &l3Pkt->hdr, sizeof(L3Hdr));
 
 	l3Pkt->pkt.frwdPktPtr = &l3FrwdPkt->pkt.frwdPkt;
+
+	/* Copy the l4 hdr into pg ptr*/
+	uint8_t len;
+	uint8_t *ptr = getPgPtr(l3Pkt->pkt.frwdPktPtr, &len, rxLen); // should assign new page TODO check if pges used ?
+	memcpy(ptr, &l3Pkt->l4Pkt.hdr, sizeof(L4Hdr));
+
 	l3FrwdQTail[port][prio] = (uint8_t)((l3FrwdQTail[port][prio] + 1u) % MAX_FORWARD_QUEUE);
 	l3FrwdQCount[port][prio]++;
 	return true;

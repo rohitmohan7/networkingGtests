@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "network.h"
+#include "allocator.h"
 
 #define MAX_PRIORITY 3
 
@@ -60,10 +61,7 @@ typedef struct {
     uint8_t  tail_used;
     
     // to do use array ?
-    uint8_t rxHdPg; // rx head page
-    uint8_t rxTlPg; // rx tail page
-    uint8_t rxHdOfst; // rx head ofst
-    uint8_t rxTlUsed; // rx tail ofst
+    PgPtr_t rxPgPtr;
 
     uint8_t retryCnt;
     uint32_t retryTmr;
@@ -95,7 +93,7 @@ void l4TxCmplt(L4Pkt* l4Pkt, uint8_t prio);
 
 uint8_t getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t idx, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen, uint8_t prio);
 
-uint8_t getL4RxPktFrag(L4Pkt *l4Pkt, uint8_t **ptr, uint8_t idx, uint8_t rxLen, uint8_t prio);
+uint8_t getL4RxPktFrag(L4Pkt *l4Pkt, uint8_t **ptr, uint8_t rxLen, uint8_t prio);
 
 bool getL4PktHd(L4Pkt *l4Pkt, uint8_t prio, uint8_t *hd, uint8_t *offset);
 

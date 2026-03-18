@@ -32,10 +32,7 @@ void l4Init() {
 			s->tail_used = 0;
 			
 			/* rx */
-			s->rxHdPg = INVALID_PAGE;
-			s->rxTlPg = INVALID_PAGE;
-			s->rxHdOfst = 0;
-			s->rxTlUsed = 0;
+			pgPtrInit(&s->rxPgPtr);
 
 			s->retryCnt = 0;
 			s->retryTmr = 0;
@@ -47,7 +44,7 @@ void l4Init() {
 bool getL4PktHd(L4Pkt* l4Pkt, uint8_t prio, uint8_t* hd, uint8_t* offset) {
 	stream_t* s = &streams[l4Pkt->pos][prio];
 
-	if (s->txMsgHdr.msgFlgs & L4_MSG_FLAG_TYPE_ACK) // this is an ack message only has l4 hdr
+	if (s->txMsgHdr.msgFlgs & L4_MSG_FLAG_TYPE_ACK) // this is an ack message only has hdr
 	{
 		return true;
 	}
@@ -138,8 +135,10 @@ static inline void readFromPgs(stream_t* s, uint8_t * val, uint8_t size) {
 		val[i] = (g_pool[base]) << (8 * i);
 		s->head_off++;
 		if (s->head_off == UNIT) {
+			uint8_t currPage = s->head_page;
 			s->head_page = g_next[s->head_page];
 			s->head_off = 0;
+			page_free(currPage);
 		}
 	}
 }
@@ -157,13 +156,7 @@ static inline void freeStream(stream_t *s)
 
 static inline void freeRxStream(stream_t *s)
 {
-	while (s->rxHdPg != INVALID_PAGE)
-	{
-		uint8_t currPage = s->rxHdPg;
-		s->rxHdPg = g_next[currPage];
-		page_free(currPage);
-	}
-	s->rxTlPg = s->rxHdPg;
+	freePgPtr(&s->rxPgPtr);
 	s->rxMsgHdr.msgFlgs = 0;
 }
 
@@ -375,7 +368,7 @@ void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio) { // recieved a frame
 	}
 }
 
-uint8_t getL4RxPktFrag(L4Pkt *l4Pkt, uint8_t **ptr, uint8_t idx, uint8_t rxLen, uint8_t prio)
+uint8_t getL4RxPktFrag(L4Pkt *l4Pkt, uint8_t **ptr, uint8_t rxLen, uint8_t prio)
 {
 	L4Hdr* l4Hdr = &l4Pkt->hdr;
 	if (l4Hdr->msgFlgs & L4_MSG_FLAG_TYPE_ACK) // ack msg should have only hdr
@@ -384,29 +377,9 @@ uint8_t getL4RxPktFrag(L4Pkt *l4Pkt, uint8_t **ptr, uint8_t idx, uint8_t rxLen, 
 	}
 
 	stream_t *const s = &streams[l4Pkt->pos][prio];
-	if (s->rxHdPg == INVALID_PAGE) {
-		s->rxHdPg = s->rxTlPg = page_alloc();
-		const uint16_t base = pageOff(s->rxHdPg);
-		*ptr = &g_pool[base];
-
-		// update tail offset
-		s->rxTlUsed = min(rxLen, UNIT);
-		return UNIT;
-	}
-	else if (s->rxTlUsed == UNIT) // need new page
-	{
-		uint8_t pg = page_alloc();
-		g_next[s->rxTlPg] = pg;
-		s->rxTlPg = pg;
-		*ptr = &g_pool[pageOff(s->rxTlPg)];
-
-		// update tail offset
-		s->rxTlUsed = min(rxLen, UNIT);
-		return UNIT;
-	} else { // some tail is used
-		*ptr = &g_pool[pageOff(s->rxTlPg)];
-		return (UNIT - s->rxTlUsed);
-	}
+	uint8_t len;
+	*ptr = getPgPtr(&s->rxPgPtr, &len, rxLen);
+	return len;
 }
 
 bool l4CmtRxPnding(L4Pkt* l4Pkt) {
@@ -421,8 +394,7 @@ bool l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio)
 	l4Pkt->pos = pos;
 	stream_t *const s = &streams[l4Pkt->pos][prio];
 
-	if (s->rxMsgHdr.msgNo != l4Hdr->msgNo)
-	{
+	if (s->rxMsgHdr.msgNo != l4Hdr->msgNo) {
 		freeRxStream(s); // clear the rx stream for new message
 	}
 

@@ -8,8 +8,6 @@ void netInit(UART_Type * UART[MAX_PORT]);
 
 void netTick();
 
-static inline uint8_t min(uint8_t a, uint8_t b) { return (a < b) ? a : b; }
-
 #if 0
 /* TODO move to config.h */
 typedef struct

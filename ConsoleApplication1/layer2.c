@@ -145,7 +145,7 @@ void interChrSlnce(uint8_t pitChnl) {
 
 void l2TxCmplt(uint8_t port) {
 	if (getPktType(&l2TxPktDesc[port].l2TxPkt) == L2_PKT_TYPE_PDU) {
-		l3TxCmplt(&l2TxPktDesc[port].l2TxPkt.msg.pdu);
+		l3TxCmplt(&l2TxPktDesc[port].l2TxPkt.msg.pdu, port);
 	}
 	// prime for next msg
 	//l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
@@ -185,23 +185,32 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 		return true;
 	case L2_PKT_TYPE_PDU:
 		L3Pkt* l3Pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu;
-		if (idx < sizeof(PduHdr)) {
-			
+		const uint8_t pduHdrSize = sizeof(L2Hdr) + l3GetPktHdrSize(l3Pkt, port);
+
+		if (idx < pduHdrSize)
+		{
+
 			if (!ptr) { // if ptr was not already set
 				*ptr = ((uint8_t *)&l2TxPktDesc[port].l2TxPkt.hdr) + idx;
 			}
-			
-			*len = sizeof(PduHdr) - idx; // reset length
 
-			return getL3PktHd(l3Pkt, &tx_pdu_head[xfer][port], &tx_pdu_hd_off[xfer][port]);
+			*len = pduHdrSize - idx; // reset length
+
+			if (txRxFifoLen + idx >= pduHdrSize) // hdr will be sent in the call
+			{
+				// call once
+				return getL3PktHd(l3Pkt, &tx_pdu_head[xfer][port], &tx_pdu_hd_off[xfer][port], port);
+			}
+			//return false;
 		}
 		else {
 
 			*len = getL3PktFrag(&l2TxPktDesc[port].l2TxPkt.msg.pdu,
-								ptr, (idx - sizeof(PduHdr)),
+								ptr, (idx - pduHdrSize),
 								&tx_pdu_head[xfer][port],
 								&tx_pdu_hd_off[xfer][port],
-								txRxFifoLen);
+								txRxFifoLen,
+								port);
 
 			if (tx_pdu_head[xfer][port] == INVALID_PAGE)
 			{
@@ -271,7 +280,7 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 				}
 			}
 
-			len = getL3RxPktFrag(port, &l2RxPktDesc[port].l2RxPkt.msg.pdu, ptr, idx, rxLen);
+			len = getL3RxPktFrag(port, &l2RxPktDesc[port].l2RxPkt.msg.pdu, ptr, rxLen);
 		}
 
 		return len;

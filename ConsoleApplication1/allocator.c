@@ -38,3 +38,52 @@ uint8_t ceilPages(uint8_t len)
 {
     return ((len + (UNIT - 1U)) / UNIT);
 }
+
+uint8_t *getPgPtr(PgPtr_t *pgPtr, uint8_t *len, uint8_t reqLen)
+{
+    uint8_t *ptr;
+    *len = UNIT;
+
+    if (pgPtr->hdPg == INVALID_PAGE)
+    {
+        pgPtr->hdPg = pgPtr->tlPg = page_alloc();
+        const uint16_t base = pageOff(pgPtr->hdPg);
+        ptr = &g_pool[base];
+
+        // update tail offset
+        pgPtr->tlUsd = min(reqLen, UNIT);
+    }
+    else if (pgPtr->tlUsd == UNIT) // need new page
+    {
+        uint8_t pg = page_alloc();
+        g_next[pgPtr->tlPg] = pg;
+        pgPtr->tlPg = pg;
+        ptr = &g_pool[pageOff(pgPtr->tlPg)];
+
+        // update tail offset
+        pgPtr->tlUsd = min(reqLen, UNIT);
+    }
+    else
+    { // some tail is used
+        ptr = &g_pool[pageOff(pgPtr->tlPg)];
+        *len = (UNIT - pgPtr->tlUsd);
+    }
+    return ptr;
+}
+
+void freePgPtr(PgPtr_t * pgPtr)
+{
+    while (pgPtr->hdPg != INVALID_PAGE)
+    {
+        uint8_t currPage = pgPtr->hdPg;
+        pgPtr->hdPg = g_next[currPage];
+        page_free(currPage);
+    }
+    pgPtr->tlPg = pgPtr->hdPg;
+}
+
+void pgPtrInit(PgPtr_t * const pgPtr)
+{
+    pgPtr->hdPg = pgPtr->tlPg = INVALID_PAGE;
+    pgPtr->hdOfst = pgPtr->tlUsd = 0;
+}

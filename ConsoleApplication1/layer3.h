@@ -12,17 +12,11 @@ typedef struct __attribute__((packed)) {
 	uint8_t prio;
 } L3Hdr;
 
-typedef struct PgPtr_st {
-	uint8_t hdPg;
-	uint8_t tlPg;
-	uint8_t  hdOfst;       /* 0..UNIT-1 */
-	uint8_t  tlUsd;
-} PgPtr_t;
-
 typedef struct __attribute__((packed)) {
 	L3Hdr hdr;
 	union {
-		PgPtr_t* frwdPkt;
+		PgPtr_t* frwdPktPtr;
+		PgPtr_t frwdPkt;
 		L4Pkt l4Pkt;
 	} pkt;
 } L3Pkt;
@@ -38,16 +32,18 @@ void l3Init(void);
 // xferMst pass MST
 bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr);
 
-void l3TxCmplt(L3Pkt* l3pkt);
+void l3TxCmplt(L3Pkt *l3pkt, const uint8_t port);
 
-uint8_t getL3PktFrag(L3Pkt* l3Pkt, uint8_t** ptr, uint8_t idx, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen);
+uint8_t getL3PktFrag(L3Pkt* l3Pkt, uint8_t** ptr, uint8_t idx, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen, uint8_t port);
 
-bool getL3PktHd(L3Pkt *l3Pkt, uint8_t *hd, uint8_t *ofst);
+bool getL3PktHd(L3Pkt *l3Pkt, uint8_t *hd, uint8_t *ofst, uint8_t port);
 
 void l3CmtRx(L3Pkt *l3Pkt, const uint8_t port);
 
 bool l3CmtRxHd(L3Pkt *l3Pkt, const uint8_t port);
 
-uint8_t getL3RxPktFrag(uint8_t port, L3Pkt *l3Pkt, uint8_t **ptr, uint8_t idx, uint8_t rxLen);
+uint8_t getL3RxPktFrag(uint8_t port, L3Pkt *l3Pkt, uint8_t **ptr, uint8_t rxLen);
+
+uint8_t l3GetPktHdrSize(L3Pkt *l3Pkt, uint8_t port);
 
 #endif

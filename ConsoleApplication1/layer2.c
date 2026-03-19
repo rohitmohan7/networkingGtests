@@ -88,11 +88,11 @@ static inline uint8_t getPktType(L2Pkt* pkt) {
 }
 
 void l2CmtRx(port) {
-	l1RxCmplt(port);
-
-	l2RxPktDesc[port].abort = false;
+	const uint8_t rxIdx = l1RxCmplt(port); // TODO validate MSG length
 
 	uint8_t rxType = l2RxPktDesc[port].l2RxPkt.hdr.type;
+
+	l2RxPktDesc[port].abort = false; // prime for next message
 
 	if (rxType == L2_PKT_TYPE_INVALID) {
 		return;
@@ -185,7 +185,7 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 		return true;
 	case L2_PKT_TYPE_PDU:
 		L3Pkt* l3Pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu;
-		const uint8_t pduHdrSize = sizeof(L2Hdr) + l3GetPktHdrSize(l3Pkt, port);
+		const uint8_t pduHdrSize = sizeof(L2Hdr) + l3GetTxPktHdrSize(l3Pkt, port);
 
 		if (idx < pduHdrSize)
 		{
@@ -257,9 +257,10 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 			return len; // abort rx early pkt not for this dev let mst timeout retry since cannot distinguish if its due to a if due to a tx error
 		}
 	}
-	
-	if (idx < sizeof(L2Hdr)) { // give header
-		*ptr = ((uint8_t*)&l2RxPktDesc[port].l2RxPkt.hdr) + idx;
+
+	if (idx < sizeof(L2Hdr))
+	{ // give header
+		*ptr = ((uint8_t *)&l2RxPktDesc[port].l2RxPkt.hdr) + idx;
 		len = sizeof(L2Hdr) - idx;
 		return len; // let Hdr finish first
 	}
@@ -270,21 +271,33 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 	switch (type) {
 	case L2_PKT_TYPE_PDU:
 
-		if (idx < sizeof(PduHdr)) {
+		if (idx < sizeof(L3Hdr)) // get L3 Hdr to determine if its a forward pkt
+		{
 			*ptr = ((uint8_t *)&l2RxPktDesc[port].l2RxPkt.hdr) + idx;
-			len = sizeof(PduHdr) - idx;
-		} else { // todo
-			if (idx == sizeof(PduHdr)) { // we just got hdr identify and prime rx
+			len = sizeof(L3Hdr) - (idx - sizeof(L2Hdr));
+		}
+		else { // todo
+
+			if (idx == sizeof(L2Hdr) + sizeof(L3Hdr)) {
 				if (!l3CmtRxHd(&l2RxPktDesc[port].l2RxPkt.msg.pdu, port)) {
 					return 0;
 				}
+			}
+
+			const uint8_t pduHdrSize = sizeof(L2Hdr) + l3GetRxPktHdrSize(&l2RxPktDesc[port].l2RxPkt.msg.pdu, port);
+
+			if (idx < pduHdrSize)
+			{
+				*ptr = ((uint8_t *)&l2RxPktDesc[port].l2RxPkt.hdr) + idx;
+				len = pduHdrSize - idx;
+				return len;
 			}
 
 			len = getL3RxPktFrag(port, &l2RxPktDesc[port].l2RxPkt.msg.pdu, ptr, rxLen);
 		}
 
 		return len;
-	case L2_PKT_TYPE_MST:// this packet should only have header
+	case L2_PKT_TYPE_MST:// these packets should only have L2 header
 	default:
 		return 0;
 	}

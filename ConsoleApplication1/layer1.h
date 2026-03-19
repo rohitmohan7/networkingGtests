@@ -11,5 +11,5 @@ void l1TransferHandleIRQ(const UART_Type *const UART, uint8_t port);
 
 void l1StartTx(uint8_t port);
 
-void l1RxCmplt(uint8_t port);
+uint8_t l1RxCmplt(uint8_t port);
 #endif

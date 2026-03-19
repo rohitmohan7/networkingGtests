@@ -49,8 +49,6 @@ uint8_t *getPgPtr(PgPtr_t *pgPtr, uint8_t *len, uint8_t reqLen)
         pgPtr->hdPg = pgPtr->tlPg = page_alloc();
         const uint16_t base = pageOff(pgPtr->hdPg);
         ptr = &g_pool[base];
-
-        // update tail offset
         pgPtr->tlUsd = min(reqLen, UNIT);
     }
     else if (pgPtr->tlUsd == UNIT) // need new page
@@ -59,15 +57,16 @@ uint8_t *getPgPtr(PgPtr_t *pgPtr, uint8_t *len, uint8_t reqLen)
         g_next[pgPtr->tlPg] = pg;
         pgPtr->tlPg = pg;
         ptr = &g_pool[pageOff(pgPtr->tlPg)];
-
-        // update tail offset
         pgPtr->tlUsd = min(reqLen, UNIT);
     }
     else
     { // some tail is used
-        ptr = &g_pool[pageOff(pgPtr->tlPg)];
+        ptr = &g_pool[(pageOff(pgPtr->tlPg) + pgPtr->tlUsd)];
         *len = (UNIT - pgPtr->tlUsd);
+        pgPtr->tlUsd += min(reqLen, *len);
     }
+    // update tail offset
+    
     return ptr;
 }
 

@@ -387,7 +387,7 @@ bool l4CmtRxPnding(L4Pkt* l4Pkt) {
 	return !(l4Hdr->msgFlgs & L4_MSG_FLAG_RXHD_CMT);
 }
 
-bool l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio)
+void l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio)
 {
 	L4Hdr *l4Hdr = &l4Pkt->hdr;
 
@@ -399,5 +399,4 @@ bool l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio)
 	}
 
 	l4Hdr->msgFlgs |= L4_MSG_FLAG_RXHD_CMT;
-	return true;
 }

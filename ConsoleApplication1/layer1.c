@@ -299,8 +299,10 @@ bool validateTxEcho(UART_Type* UARTptr, uint8_t port, uint8_t count) {
 	return true;
 }
 
-void l1RxCmplt(uint8_t port) {
+uint8_t l1RxCmplt(uint8_t port) {
+	uint8_t ret = rxIndex[port];
 	rxIndex[port] = 0;
+	return ret;
 }
 
 void l1TransferHandleIRQ(const UART_Type* const UARTptr, uint8_t port) {

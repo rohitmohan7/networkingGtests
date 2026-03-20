@@ -340,7 +340,9 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 			const uint8_t frwdQHd = l3FrwdQHead[port][prio];
 			L3Pkt *l3FrwdPkt = &l3FrwdQ[port][prio][frwdQHd];
 			memcpy(l3Pkt, l3FrwdPkt, (sizeof(L3Hdr) + sizeof(L4Hdr)));
-			*l2Addr = l3Pkt->hdr.dst;
+			const uint8_t dstSubnet = l3Pkt->hdr.dst >> 8;
+			const uint8_t gateway = l3RouteTable[dstSubnet];
+			*l2Addr = (gateway) ? gateway : l3Pkt->hdr.dst; /* if dst subnet is distant it will have gateway in route table */
 			// TODO MST pass ?
 			*xferMst = passMstFrwd(port, prio);
 			return true;

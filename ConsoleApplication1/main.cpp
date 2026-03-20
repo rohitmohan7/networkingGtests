@@ -777,7 +777,7 @@ void expectFrwdFrame(MockUart &mock,
     }
 }
 
-#if 0
+//#if 0
 TEST_P(MultiHop, addr) {
     // check correct addr table
     ASSERT_EQ(0, std::memcmp(GetParam().l3AddrTblPrio.data(), l3AddrTblPrio, sizeof(l3AddrTblPrio)));
@@ -1515,7 +1515,7 @@ TEST_P(MultiHop, pduHopFrwd)
         }
     }
 }
-#endif
+//#endif
 
 //#if 0
 TEST_P(MultiHop, pduHopFrwdBrdCst)

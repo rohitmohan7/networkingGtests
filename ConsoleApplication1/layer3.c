@@ -106,6 +106,14 @@ bool getL3PktHd(L3Pkt *l3Pkt, uint8_t *hd, uint8_t *ofst, uint8_t port)
 	}
 }
 
+void l3AbortRx(L3Pkt* const l3Pkt, const uint8_t port) {
+	L3Hdr* l3Hdr = &l3Pkt->hdr;
+	if (l3Hdr->dst == l3AddrTblPrio[myPos][port]) {
+		l4AbortRx(&l3Pkt->pkt.l4Pkt, l3Hdr->prio);
+	} else {
+	}// frwd todo
+}
+
 uint8_t setL3Hdr(L3Pkt * l3Pkt, uint8_t port, uint8_t prio, uint16_t pos) {
 	L3Hdr* l3Hdr = &l3Pkt->hdr;
 	l3Hdr->src = l3AddrTblPrio[myPos][port];
@@ -369,17 +377,6 @@ static inline bool l3PushFrwdPktUnicst(L3Pkt *const l3Pkt, const uint8_t port)
 	return false;
 }
 
-static inline bool l3PushFrwdPktBrdcst(L3Pkt *const l3Pkt, const uint8_t port)
-{
-	L3Pkt *l3FrwdPkt = l3PushFrwdPkt(l3Pkt, port);
-	if (l3FrwdPkt)
-	{
-		/* need to copy local packets */
-		return true;
-	}
-	return false;
-}
-
 bool l3CmtRxHd(L3Pkt *l3Pkt, const uint8_t port) { // called from L2
 	L3Hdr *l3Hdr = &l3Pkt->hdr;
 
@@ -464,24 +461,45 @@ bool l3RxCmplt(uint8_t rxIdx) {
 	return true;
 }
 
-static inline void l3BrdCst(const uint8_t port, L3Pkt * const l3Pkt)
+static inline bool l3BrdCst(const uint8_t port, L3Pkt * const l3Pkt)
 {
+	const L3Hdr* l3Hdr = &l3Pkt->hdr;
 	const uint8_t portSubnet = l3AddrTblPrio[myPos][port] >> 8;
-	for (int peerPort = 0; peerPort < MAX_PORT; peerPort++)
-	{
-		if (peerPort == port)
-		{
+	PgPtr_t* pgPtr = NULL;
+	bool ret = false;
+
+	for (int peerPort = 0; peerPort < MAX_PORT; peerPort++) {
+		if (peerPort == port) {
 			continue;
 		}
 		
 		// check brdcast table
 		if (l3BcastInSubnetForSrcPort[l3Pkt->pkt.l4Pkt.pos][peerPort] == portSubnet)
 		{
-			if (l3PushFrwdPktBrdcst(l3Pkt, peerPort))
-			{
+			ret = true;
+			L3Pkt* l3FrwdPkt = l3PushFrwdPkt(l3Pkt, peerPort);
+			if (l3FrwdPkt) {
+				if (pgPtr) {
+					// copy the page ptr
+					memcpy(&l3FrwdPkt->pkt.frwdPkt, pgPtr, sizeof(PgPtr_t));
+				} else {
+					// first commit l4 and get last frame
+					pgPtr = &l3FrwdPkt->pkt.frwdPkt;
+					l4CmtRx(&l3Pkt->pkt.l4Pkt, l3Hdr->prio, pgPtr);
+				}
 			}
 		}
 	}
+
+	if (ret && !pgPtr) {
+		/* supposed to be forwarded but failed since queue is full, l4 wont free the frame so free frame manually,
+		other frames can be in forward queue so we dont want to let l4 free whole Rx stream*/
+		PgPtr_t frmPgPtr;
+		l4CmtRx(&l3Pkt->pkt.l4Pkt, l3Hdr->prio, &frmPgPtr);
+		freePgPtr(&frmPgPtr);
+	}
+
+	return ret;
 }
 
 void l3CmtRx(L3Pkt * const l3Pkt, const uint8_t port)
@@ -503,12 +521,9 @@ void l3CmtRx(L3Pkt * const l3Pkt, const uint8_t port)
 			}
 		}
 
-		l4CmtRx(&l3Pkt->pkt.l4Pkt, l3Hdr->prio);
-
 		/* Check to brodcast */
-		if (!l3Hdr->dst)
-		{
-			l3BrdCst(port, l3Pkt);
+		if (l3Hdr->dst || !l3BrdCst(port, l3Pkt)) {
+			l4CmtRx(&l3Pkt->pkt.l4Pkt, l3Hdr->prio, NULL);
 		}
 	} else { // TODO forward packet
 		

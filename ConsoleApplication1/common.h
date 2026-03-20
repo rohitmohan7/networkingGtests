@@ -1,8 +1,8 @@
-﻿#include "global.h"
+﻿
 
 #ifndef COMMON_H_
 #define COMMON_H_
-
+#include "global.h"
 /* -------------------- Main -------------------- */
 
 #define __IO
@@ -75,10 +75,40 @@ typedef struct {
 #define UART_S1_TC_MASK                          (0x40U)
 
 #define UART_C2_RE_MASK                          (0x4U)
+#define UART_PFIFO_TXFE_MASK                     (0x80U)
+#define UART_PFIFO_RXFE_MASK                     (0x8U)
+#define UART_CFIFO_TXFLUSH_MASK                  (0x80U)
 
+#define UART_C4_BRFA_MASK                        (0x1FU)
+#define UART_C4_BRFA_SHIFT                       (0U)
+ /*! BRFA - Baud Rate Fine Adjust */
+#define UART_C4_BRFA(x)                          (((uint8_t)(((uint8_t)(x)) << UART_C4_BRFA_SHIFT)) & UART_C4_BRFA_MASK)
 
 static void __DMB() {
     // do nothing
 }
+extern UART_Type* UART0;
+extern UART_Type* UART1;
+extern UART_Type* UART2;
+extern UART_Type* UART3;
+extern UART_Type* UART4;
+extern UART_Type* UART5;
+
+#define SIM_SCGC4_UART0_MASK 0
+#define SIM_SCGC4_UART1_MASK 0
+#define SIM_SCGC4_UART2_MASK 0
+#define SIM_SCGC4_UART3_MASK 0
+#define SIM_SCGC1_UART4_MASK 0
+#define SIM_SCGC1_UART5_MASK 0
+
+typedef struct {
+    uint32_t SCGC4;
+    uint32_t SCGC1;
+} SIM_Type;
+
+
+
+extern SIM_Type* SIM;
+
 #endif
 

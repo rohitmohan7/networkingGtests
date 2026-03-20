@@ -26,7 +26,8 @@ void l4Init() {
 			s->txOrder = 0;
 			memset(&s->txMsgHdr, 0x0, sizeof(L4Hdr));
 			memset(&s->rxMsgHdr, 0x0, sizeof(L4Hdr));
-			s->head_page = INVALID_PAGE;
+			s->rxMsgHdr.rxDesc.rxFrmHd = 
+			s->head_page =
 			s->tail_page = INVALID_PAGE;
 			s->head_off = 0;
 			s->tail_used = 0;
@@ -157,7 +158,8 @@ static inline void freeStream(stream_t *s)
 static inline void freeRxStream(stream_t *s)
 {
 	freePgPtr(&s->rxPgPtr);
-	s->rxMsgHdr.msgFlgs = 0;
+	//s->rxMsgHdr.msgFlgs = 0;
+	//s->rxMsgHdr.rxDesc.rxFrmHd = INVALID_PAGE;
 }
 
 static inline bool clearMsgFrame(L4Pkt *l4Pkt, stream_t *s, bool allFrames)
@@ -341,10 +343,18 @@ void l4SndAck(stream_t *const s)
 	}
 }
 
-void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio) { // recieved a frame
+void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio, PgPtr_t * pgPtr) { // recieved a frame
 	L4Hdr *l4Hdr = &l4Pkt->hdr;
 	// identify the stream
 	stream_t *const s = &streams[l4Pkt->pos][prio];
+
+	if (pgPtr) {
+		/* Give the RX frame Ptr */
+		pgPtr->tlPg = s->rxPgPtr.tlPg;
+		pgPtr->tlUsd = s->rxPgPtr.tlUsd;
+		pgPtr->hdPg = s->rxMsgHdr.rxDesc.rxFrmHd;
+		pgPtr->hdOfst = s->rxMsgHdr.rxDesc.rxFrmHdOfst;
+	}
 
 	if (l4Hdr->msgFlgs & L4_MSG_FLAG_TYPE_ACK) // this is an ack message
 	{
@@ -358,14 +368,22 @@ void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio) { // recieved a frame
 	{
 		// call into app immediatly to process message
 		appRecv(s);
-		freeRxStream(s);
 
-		if (l4Hdr->msgFlgs & L4_MSG_FLAG_REQ_ACK)
-		{
+		if (!pgPtr) {
+			freeRxStream(s);
+		}
+		else {
+			// l3 responsibility to free the page ptrs subject to forwarding
+			s->rxPgPtr.hdPg = INVALID_PAGE;
+		}
+
+		if (l4Hdr->msgFlgs & L4_MSG_FLAG_REQ_ACK) {
 			// tx an ack
 			l4SndAck(s);
 		}
 	}
+
+	s->rxMsgHdr.rxDesc.rxFrmHd = INVALID_PAGE;
 }
 
 uint8_t getL4RxPktFrag(L4Pkt *l4Pkt, uint8_t **ptr, uint8_t rxLen, uint8_t prio)
@@ -396,7 +414,34 @@ void l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio)
 
 	if (s->rxMsgHdr.msgNo != l4Hdr->msgNo) {
 		freeRxStream(s); // clear the rx stream for new message
+		s->rxMsgHdr.msgNo = l4Hdr->msgNo;
 	}
 
+	// keep track of prev head
+	s->rxMsgHdr.rxDesc.rxFrmHd = s->rxPgPtr.tlPg;
+	s->rxMsgHdr.rxDesc.rxFrmHdOfst = s->rxPgPtr.tlUsd;
+
 	l4Hdr->msgFlgs |= L4_MSG_FLAG_RXHD_CMT;
+}
+
+void l4AbortRx(L4Pkt* l4Pkt, const uint8_t prio) {
+	// clear current frame
+	stream_t* const s = &streams[l4Pkt->pos][prio];
+	const uint8_t frmHd = s->rxMsgHdr.rxDesc.rxFrmHd;
+
+	if (frmHd != INVALID_PAGE) {
+		// clear frame
+		if (frmHd == s->rxPgPtr.hdPg) {
+			// rx stream will always start with hd offset 0
+			freeRxStream(s);
+		} else {
+			PgPtr_t frmPtr;
+			frmPtr.hdPg = g_next[frmHd];
+			freePgPtr(&frmPtr);
+
+			// set new stream tail
+			s->rxPgPtr.tlPg = frmHd;
+			s->rxPgPtr.tlUsd = s->rxMsgHdr.rxDesc.rxFrmHdOfst;
+		}
+	}
 }

@@ -19,10 +19,18 @@
 typedef uint16_t TxOrderType;
 typedef uint16_t MsgLenType;
 
+typedef struct RxDesc_st {
+    uint8_t rxFrmHd;
+    uint8_t rxFrmHdOfst;
+} RxDesc_t;
+
 typedef struct __attribute__((packed)) {
     uint8_t msgNo;
     uint8_t msgFlgs;
-    MsgLenType msgLen;
+    union {
+        MsgLenType msgLen;
+        RxDesc_t rxDesc;
+    };
 } L4Hdr;
 
 #if 0
@@ -105,11 +113,13 @@ void l4Init();
 
 void l4Tick(uint8_t ms);
 
-void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio);
+void l4CmtRx(L4Pkt* l4Pkt, const uint8_t prio, PgPtr_t* pgPtr);
 
 void l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio);
 
 void writeValToPage(stream_t *s, uint8_t *val, uint8_t len);
 
 bool l4CmtRxPnding(L4Pkt* l4Pkt);
+
+void l4AbortRx(L4Pkt* l4Pkt, const uint8_t prio);
 #endif

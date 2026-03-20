@@ -86,12 +86,12 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="network.c" />
     <ClCompile Include="pit.c" />
-    <ClCompile Include="scheduler.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="allocator.h" />
     <ClInclude Include="app.h" />
     <ClInclude Include="common.h" />
+    <ClInclude Include="config.h" />
     <ClInclude Include="global.h" />
     <ClInclude Include="layer1.h" />
     <ClInclude Include="layer2.h" />
@@ -99,6 +99,7 @@
     <ClInclude Include="layer4.h" />
     <ClInclude Include="network.h" />
     <ClInclude Include="pit.h" />
+    <ClInclude Include="pmm.h" />
   </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>

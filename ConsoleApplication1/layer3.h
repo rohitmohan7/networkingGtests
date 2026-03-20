@@ -13,6 +13,11 @@ typedef struct __attribute__((packed)) {
 } L3Hdr;
 
 typedef struct __attribute__((packed)) {
+  uint8_t data[sizeof(L4Hdr)]; // first 4 data of frwd pkt not neccesarily l4 hdr
+  uint8_t frwdQIdx;
+} L3FrwdPkt;
+
+typedef struct __attribute__((packed)) {
 	L3Hdr hdr;
 	union {
 		PgPtr_t* frwdPktPtr;

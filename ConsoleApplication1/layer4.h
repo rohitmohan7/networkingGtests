@@ -19,7 +19,8 @@
 typedef uint16_t TxOrderType;
 typedef uint16_t MsgLenType;
 
-typedef struct RxDesc_st {
+typedef struct RxDesc_st
+{
     uint8_t rxFrmHd;
     uint8_t rxFrmHdOfst;
 } RxDesc_t;
@@ -32,29 +33,6 @@ typedef struct __attribute__((packed)) {
         RxDesc_t rxDesc;
     };
 } L4Hdr;
-
-#if 0
-typedef struct stream_t stream_t;   // forward declaration
-
-typedef struct {
-    L4Hdr txMsgHdr;
-    TxOrderType txOrder;
-
-    uint8_t head_page;
-    uint8_t tail_page;
-    uint8_t  head_off;       /* 0..UNIT-1 */
-    uint8_t  tail_used;
-
-    uint8_t retryCnt;
-    uint8_t retryTmr;
-} prio_stream_t;
-
-
-typedef struct stream_t
-{
-    prio_stream_t prio[MAX_PRIORITY];
-} stream_t;
-#endif
 
 typedef struct {
     L4Hdr txMsgHdr;
@@ -113,13 +91,11 @@ void l4Init();
 
 void l4Tick(uint8_t ms);
 
-void l4CmtRx(L4Pkt* l4Pkt, const uint8_t prio, PgPtr_t* pgPtr);
+void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio);
 
 void l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio);
 
 void writeValToPage(stream_t *s, uint8_t *val, uint8_t len);
 
 bool l4CmtRxPnding(L4Pkt* l4Pkt);
-
-void l4AbortRx(L4Pkt* l4Pkt, const uint8_t prio);
 #endif

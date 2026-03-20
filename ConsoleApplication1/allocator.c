@@ -2,6 +2,7 @@
 
 uint8_t g_next[NUM_PAGES];
 uint8_t   g_pool[POOL_BYTES];
+static uint8_t g_users[NUM_PAGES];
 uint8_t  g_free_count;
 static uint8_t g_free_head;
 
@@ -10,6 +11,7 @@ void pages_init(void)
     for (uint8_t i = 0; i < (uint8_t)NUM_PAGES; ++i)
     {
         g_next[i] = (i + 1U < (uint8_t)NUM_PAGES) ? (uint8_t)(i + 1U) : INVALID_PAGE;
+        g_users[i] = 0;
     }
     g_free_head = 0U;
     g_free_count = (uint16_t)NUM_PAGES;
@@ -22,6 +24,7 @@ uint8_t page_alloc(void)
     g_free_head = g_next[p];
     g_next[p] = INVALID_PAGE;
     g_free_count--;
+    g_users[p]++;
     return p;
 }
 
@@ -76,9 +79,28 @@ void freePgPtr(PgPtr_t * pgPtr)
     {
         uint8_t currPage = pgPtr->hdPg;
         pgPtr->hdPg = g_next[currPage];
-        page_free(currPage);
+
+        g_users[currPage]--;
+        if (!g_users[currPage])
+        {
+            page_free(currPage); // free page if not used by anyone else
+        }
     }
     pgPtr->tlPg = pgPtr->hdPg;
+}
+
+void addUser(PgPtr_t *pgPtr)
+{
+    uint8_t currPage = pgPtr->hdPg;
+    while (currPage != INVALID_PAGE)
+    {
+        g_users[currPage]++;
+        if (currPage == pgPtr->tlPg)
+        { // gate to tail page
+            break;
+        }
+        currPage = g_next[currPage];
+    }
 }
 
 void pgPtrInit(PgPtr_t * const pgPtr)

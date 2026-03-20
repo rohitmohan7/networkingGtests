@@ -74,10 +74,6 @@ bool getL4PktHd(L4Pkt* l4Pkt, uint8_t prio, uint8_t* hd, uint8_t* offset) {
 
 	*offset = currOfst;
 	*hd = currHd;
-
-	s->txMsgHdr.msgFlgs = l4Pkt->hdr.msgLen
-							  ? (s->txMsgHdr.msgFlgs | L4_MSG_FLAG_STREAM_PENDING)
-							  : (s->txMsgHdr.msgFlgs & ~L4_MSG_FLAG_STREAM_PENDING);
 	return false;
 }
 
@@ -233,6 +229,10 @@ void l4TxCmplt(L4Pkt* l4Pkt, uint8_t prio) {
 		 }
 		 s->txFrameCnt++;
 	 }
+
+	 s->txMsgHdr.msgFlgs = l4Pkt->hdr.msgLen
+							   ? (s->txMsgHdr.msgFlgs | L4_MSG_FLAG_STREAM_PENDING)
+							   : (s->txMsgHdr.msgFlgs & ~L4_MSG_FLAG_STREAM_PENDING);
 }
 
 bool l4StrmEmptyAftFrme(uint16_t pos, uint8_t prio) {
@@ -343,18 +343,10 @@ void l4SndAck(stream_t *const s)
 	}
 }
 
-void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio, PgPtr_t * pgPtr) { // recieved a frame
+void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio) { // recieved a frame
 	L4Hdr *l4Hdr = &l4Pkt->hdr;
 	// identify the stream
 	stream_t *const s = &streams[l4Pkt->pos][prio];
-
-	if (pgPtr) {
-		/* Give the RX frame Ptr */
-		pgPtr->tlPg = s->rxPgPtr.tlPg;
-		pgPtr->tlUsd = s->rxPgPtr.tlUsd;
-		pgPtr->hdPg = s->rxMsgHdr.rxDesc.rxFrmHd;
-		pgPtr->hdOfst = s->rxMsgHdr.rxDesc.rxFrmHdOfst;
-	}
 
 	if (l4Hdr->msgFlgs & L4_MSG_FLAG_TYPE_ACK) // this is an ack message
 	{
@@ -368,14 +360,7 @@ void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio, PgPtr_t * pgPtr) { // recieved a 
 	{
 		// call into app immediatly to process message
 		appRecv(s);
-
-		if (!pgPtr) {
-			freeRxStream(s);
-		}
-		else {
-			// l3 responsibility to free the page ptrs subject to forwarding
-			s->rxPgPtr.hdPg = INVALID_PAGE;
-		}
+		freeRxStream(s);
 
 		if (l4Hdr->msgFlgs & L4_MSG_FLAG_REQ_ACK) {
 			// tx an ack
@@ -444,4 +429,22 @@ void l4AbortRx(L4Pkt* l4Pkt, const uint8_t prio) {
 			s->rxPgPtr.tlUsd = s->rxMsgHdr.rxDesc.rxFrmHdOfst;
 		}
 	}
+}
+
+void l4RxGetLastFrame(const uint8_t prio, L4Pkt *l4Pkt, PgPtr_t *frame)
+{
+	stream_t *const s = &streams[l4Pkt->pos][prio];
+	
+	if (s->rxMsgHdr.rxDesc.rxFrmHd == INVALID_PAGE) {
+		/* First frame */
+		frame->hdPg = s->rxPgPtr.hdPg;
+		frame->hdOfst = s->rxPgPtr.hdOfst;
+	} else {
+		frame->hdPg = s->rxMsgHdr.rxDesc.rxFrmHd;
+		frame->hdOfst = s->rxMsgHdr.rxDesc.rxFrmHdOfst;
+	}
+		
+	frame->tlPg = s->rxPgPtr.tlPg;
+	frame->tlUsd = s->rxPgPtr.tlUsd;
+	addUser(frame);
 }

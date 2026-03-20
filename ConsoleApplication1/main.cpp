@@ -1388,7 +1388,7 @@ TEST_P(MultiHop, pduNoHopRxAck)
 //#endif
 
 //#if 0
-TEST_P(MultiHop, pduHopFrwdLocal)
+TEST_P(MultiHop, pduHopFrwd)
 {
     MockUart mock;
     g_mock = &mock;
@@ -1573,8 +1573,139 @@ TEST_P(MultiHop, pduHopFrwdLocal)
         }
     }
 }
-
 //#endif
+
+#if 0
+TEST_P(MultiHop, pduHopFrwdBrdCst)
+{
+    MockUart mock;
+    g_mock = &mock;
+    testing::InSequence seq;
+    // construct message
+    static const int MSG_SIZE = 100;
+    std::array<uint8_t, MSG_SIZE> msg;
+    for (int i = 0; i < MSG_SIZE; i++)
+    {
+        msg[i] = i;
+    }
+
+    PduHdr pduHdr{};
+
+    uint8_t idx[MAX_PORT];
+
+    for (int port = 0; port < MAX_PORT; port++)
+    {
+        // confirm UART TX is disabled
+        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+
+        uint16_t l3Addr = GetParam().l3AddrTblPrio[GetParam().pos][port];
+        uint8_t portSubnet = l3Addr >> 8;
+        uint8_t l2Addr = (l3Addr & 0x00FF);
+        if (l2Addr == 0 || GetParam().devCnt[port] <= 1) // TODO what if in debug if we keep addr
+        {
+            continue;
+        }
+
+        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
+
+
+        /* Packet arriving in this port should forward to other port */
+        for (int port2 = 0; port2 < MAX_PORT; port2++)
+        {
+            if (port == port2)
+            {
+                continue;
+            }
+
+            uint16_t l3Addr2 = GetParam().l3AddrTblPrio[GetParam().pos][port2];
+            uint8_t l2Addr2 = (l3Addr2 & 0x00FF);
+
+            if (l2Addr2 == 0 || GetParam().devCnt[port] <= 1) // TODO what if in debug if we keep addr
+            {
+                continue;
+            }
+
+            // confirm RX is enabled
+            ASSERT_EQ((uart_objs[port2].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
+
+            uint16_t l3SrcAddr = 0;
+
+            for (int pos = 0; pos < MAX_POS; pos++)
+            {
+                // find a dst dev on port to forward
+                if (pos == GetParam().pos)
+                {
+                    continue;
+                }
+                
+                /* check brdcst table*/
+                if (GetParam().l3BcastInSubnetForSrcPort[pos][port2] != portSubnet)
+                {
+                    continue;
+                }
+
+                for (int port3 = 0; port3 < MAX_PORT; port3++)
+                {
+                    uint8_t subnet = GetParam().l3AddrTblPrio[pos][port3] >> 8;
+                    if (subnet == (l3Addr >> 8))
+                    {
+                        l3SrcAddr = GetParam().l3AddrTblPrio[pos][port3];
+                        break;
+                    }
+                }
+                
+                //
+
+                if (l3SrcAddr)
+                {
+                    break;
+                }
+            }
+
+            if (!l3SrcAddr) {
+                continue;
+            }
+
+            uint16_t l3DstAddr = 0;
+            uint8_t rxPgOfst = 0; // page will have L4 Hdr
+
+            PduHdr pduHdr = PduHdr{
+                .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU), 0xFF},
+                .l3hdr = {l3SrcAddr, l3DstAddr, 1, 0},
+                .l4hdr = {0, 0, 0}};
+
+            memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
+
+            // send msg to port 1
+            sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
+                       msg.size(), port);
+
+            // send MST to port 2
+            sendMstToken(mock, uart_ptrs[port2], l2Addr2, port2);
+
+            // will send message
+
+            // first expect hdr
+            pduHdr = PduHdr{
+                .l2hdr = {l3DstAddr, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST), 0xFF},
+                .l3hdr = {l3SrcAddr, l3DstAddr, 1, 0},
+                .l4hdr = {0, 0, 0}};
+
+            uint8_t size;
+
+            expectFrwdFrame(mock,
+                            uart_ptrs[port2],
+                            port2,
+                            idx[port2],
+                            size,
+                            TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
+                            (msg.data() + (sizeof(L2Hdr) + sizeof(L3Hdr))),
+                            (msg.size() - (sizeof(L2Hdr) + sizeof(L3Hdr))), /* L4 hdr is part of page buffer */
+                            pduHdr);
+        }
+    }
+}
+#endif
 //TEST_P(MultiHop, l2test) {
 //
 //}

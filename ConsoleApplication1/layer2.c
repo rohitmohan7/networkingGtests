@@ -92,7 +92,7 @@ void l2CmtRx(port) {
 
 	uint8_t rxType = l2RxPktDesc[port].l2RxPkt.hdr.type;
 
-	l2RxPktDesc[port].abort = false; // prime for next message
+	l2RxPktDesc[port].abort = false; // 
 
 	if (rxType == L2_PKT_TYPE_INVALID) {
 		return;
@@ -233,9 +233,8 @@ bool l2RxAborted(uint8_t port) {
 
 static inline void l2AbortRx(uint8_t port) {
 	l2RxPktDesc[port].abort = true;
-	l2RxPktDesc[port].l2RxPkt.hdr.type = L2_PKT_TYPE_INVALID;
-	l2RxPktDesc[port].l2RxPkt.hdr.addr = 0x00;
-	l3AbortRx(&l2RxPktDesc[port].l2RxPkt.msg.pdu);
+	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
+	l2TxPktDesc[port].l2TxPkt.hdr.addr = 0x00;
 }
 
 void l2AbortXfer(uint8_t port) {

@@ -49,7 +49,7 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, 
         s->tail_used = 0U;
 
         // stream is empty init with msg len
-        s->txMsgHdr.msgLen = len;
+        s->txMsgHdr.u.msgLen = len;
         s->txMsgHdr.msgFlgs = msgFlgs;
         s->retryCnt =
         s->retryTmr = 0;

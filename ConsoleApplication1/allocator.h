@@ -30,4 +30,5 @@ uint8_t *getPgPtr(PgPtr_t *pgPtr, uint8_t *len, uint8_t reqLen);
 static inline uint8_t min(uint8_t a, uint8_t b) { return (a < b) ? a : b; }
 void freePgPtr(PgPtr_t *pgPtr);
 void pgPtrInit(PgPtr_t * const pgPtr);
+void addUser(PgPtr_t *pgPtr);
 #endif

@@ -1495,7 +1495,7 @@ TEST_P(MultiHop, pduHopFrwd)
 
                     // first expect hdr
                     pduHdr = PduHdr{
-                        .l2hdr = {l3DstAddr, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST), 0xFF},
+                        .l2hdr = {GetParam().l3RouteTable[subnet], (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST), 0xFF},
                         .l3hdr = {l3SrcAddr, l3DstAddr, 1, 0},
                         .l4hdr = {0, 0, 0}};
 

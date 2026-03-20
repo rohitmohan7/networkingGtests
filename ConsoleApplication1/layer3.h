@@ -14,16 +14,15 @@ typedef struct __attribute__((packed)) {
 
 typedef struct __attribute__((packed)) {
   uint8_t data[sizeof(L4Hdr)]; // first 4 data of frwd pkt not neccesarily l4 hdr
-  uint8_t frwdQIdx;
+  uint8_t dstPort;
 } L3FrwdPkt;
 
 typedef struct __attribute__((packed)) {
 	L3Hdr hdr;
 	union {
-		PgPtr_t* frwdPktPtr;
-		PgPtr_t frwdPkt;
+		L3FrwdPkt frwdPkt;
 		L4Pkt l4Pkt;
-	} pkt;
+	};
 } L3Pkt;
 
 extern uint16_t l3AddrTblPrio[MAX_POS][MAX_PORT]; // pos addr table ordered by hops/bus load

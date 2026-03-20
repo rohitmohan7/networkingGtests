@@ -237,16 +237,11 @@ void sendMsgAck(MockUart& mock, UART_Type* UART, const PduHdr& pduHdr, const uin
             }))
         .RetiresOnSaturation();
 
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L3Hdr)))
+    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(PduHdr) - sizeof(L2Hdr)))
         .Times(1)
-        .WillOnce(testing::Invoke([pkt](UART_Type *UART, uint8_t *data, size_t len)
-                                  { std::memcpy(data, pkt.data() + sizeof(L2Hdr), len); }))
-        .RetiresOnSaturation();
-
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L4Hdr)))
-        .Times(1)
-        .WillOnce(testing::Invoke([pkt](UART_Type *UART, uint8_t *data, size_t len)
-                                  { std::memcpy(data, pkt.data() + sizeof(L2Hdr) + sizeof(L3Hdr), len); }))
+        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
+        std::memcpy(data, pkt.data() + sizeof(L2Hdr), len);
+            }))
         .RetiresOnSaturation();
 
     l1TransferHandleIRQ(UART, port);
@@ -273,18 +268,10 @@ void sendPduMsg(MockUart &mock, UART_Type *UART, uint8_t &rxPgOfst, const uint8_
                                   { std::memcpy(data, msg, len); }))
         .RetiresOnSaturation();
 
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L3Hdr)))
+    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(PduHdr) - sizeof(L2Hdr)))
         .Times(1)
         .WillOnce(testing::Invoke([msg](UART_Type *UART, uint8_t *data, size_t len)
                                   { std::memcpy(data, msg + sizeof(L2Hdr), len); }))
-        .RetiresOnSaturation();
-
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L4Hdr)))
-        .Times(1)
-        .WillOnce(testing::Invoke([msg](UART_Type *UART, uint8_t *data, size_t len)
-                                  { 
-                                    std::memcpy(data, msg + sizeof(L2Hdr) + sizeof(L3Hdr), len); 
-                                }))
         .RetiresOnSaturation();
 
     l1TransferHandleIRQ(UART, port);
@@ -294,58 +281,13 @@ void sendPduMsg(MockUart &mock, UART_Type *UART, uint8_t &rxPgOfst, const uint8_
     {
         uint8_t size = std::min(static_cast<int>(UNIT - rxPgOfst), msgSize);
 
-        EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), size))
-            .Times(1)
-            .WillOnce(testing::Invoke([msg, origSize, msgSize](const UART_Type * const UART, uint8_t *data, size_t len)
-                                      {
-                                        std::memcpy(data, msg + (origSize - msgSize), len); }))
-            .RetiresOnSaturation();
-
-        UART->RCFIFO = size; // keep rx fifo full for now
-        l1TransferHandleIRQ(UART, port);
-        msgSize -= size;
-        rxPgOfst = 0;
-    }
-
-    UART->S1 &= ~UART_S1_RDRF_MASK;
-    UART->RCFIFO = 0;
-
-    PITCallback(port + L2_PIT_TIMER_START_IDX); // interchar silence
-
-    PITCallback(port + L2_PIT_TIMER_START_IDX); // interframe silence
-}
-
-void sendPduFrwdMsg(MockUart &mock, UART_Type *UART, uint8_t &rxPgOfst, const uint8_t *msg,
-                const int &origSize, const uint8_t &port)
-{
-    UART->S1 |= UART_S1_RDRF_MASK;
-    int msgSize = origSize;
-    UART->RCFIFO = sizeof(PduHdr);
-
-    // call to copy header
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Hdr)))
-        .Times(1)
-        .WillOnce(testing::Invoke([msg](UART_Type *UART, uint8_t *data, size_t len)
-                                  { std::memcpy(data, msg, len); }))
-        .RetiresOnSaturation();
-
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(PduHdr) - sizeof(L2Hdr) - sizeof(L4Hdr)))
-        .Times(1)
-        .WillOnce(testing::Invoke([msg](UART_Type *UART, uint8_t *data, size_t len)
-                                  { std::memcpy(data, msg + sizeof(L2Hdr), len); }))
-        .RetiresOnSaturation();
-
-    l1TransferHandleIRQ(UART, port);
-    msgSize -= (sizeof(PduHdr) - sizeof(L4Hdr));
-
-    while (msgSize)
-    {
-        uint8_t size = std::min(static_cast<int>(UNIT - rxPgOfst), msgSize);
+        const uint8_t *msgAftHdr = msg + sizeof(PduHdr);
 
         EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), size))
             .Times(1)
             .WillOnce(testing::Invoke([msg, origSize, msgSize](const UART_Type *const UART, uint8_t *data, size_t len)
                                       { 
+                            const uint8_t * msgAftHdr2 = msg + (origSize - msgSize);
                             std::memcpy(data, msg + (origSize - msgSize), len); }))
             .RetiresOnSaturation();
 
@@ -679,8 +621,8 @@ void expectFrwdFrame(MockUart &mock,
                 ((UART->C2 & (uint8_t)(UART_C2_TE_MASK)) == 0U) &&
                 ((UART->C2 & (uint8_t)(UART_C2_TIE_MASK)) != 0U));
         }
-        // expect header
-        expectFrwdHdr(mock, UART, hdr, port, echo);
+       // expect header
+        expectHdr(mock, UART, hdr, port, echo);
     }
 
     size = UNIT - (size /*+ (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG ? sizeof(L4Hdr::msgLen) + sizeof(txOrder) + sizeof(L4Hdr::msgFlgs) : 0)*/);
@@ -835,7 +777,7 @@ void expectFrwdFrame(MockUart &mock,
     }
 }
 
-//#if 0
+#if 0
 TEST_P(MultiHop, addr) {
     // check correct addr table
     ASSERT_EQ(0, std::memcmp(GetParam().l3AddrTblPrio.data(), l3AddrTblPrio, sizeof(l3AddrTblPrio)));
@@ -1486,7 +1428,7 @@ TEST_P(MultiHop, pduHopFrwd)
 
             ASSERT_NE(l3DstAddr, 0);
 
-            uint8_t rxPgOfst = sizeof(L4Hdr); // page will have L4 Hdr
+            uint8_t rxPgOfst = 0; // page will have L4 Hdr
 
             PduHdr pduHdr = PduHdr{
                 .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU), 0xFF},
@@ -1518,10 +1460,10 @@ TEST_P(MultiHop, pduHopFrwd)
                             idx[port2],
                             size,
                             TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-                            (msg.data() + (sizeof(L2Hdr) + sizeof(L3Hdr))),
-                            (msg.size() - (sizeof(L2Hdr) + sizeof(L3Hdr))), /* L4 hdr is part of page buffer */
+                            (msg.data() + (sizeof(PduHdr))),
+                            (msg.size() - (sizeof(PduHdr))), /* L4 hdr is part of page buffer */
                             pduHdr);
-                            
+
             // check for a gateway in port2 ...
             uint8_t port2Subnet = l3Addr2 >> 8;
             for (int subnet = 0; subnet < MAX_SUBNET; subnet++) {
@@ -1533,7 +1475,7 @@ TEST_P(MultiHop, pduHopFrwd)
                     l3DstAddr = (subnet << 8) | 1; // choose a dst address to this distant subnet
                     ASSERT_NE(l3DstAddr, 0);
 
-                    uint8_t rxPgOfst = sizeof(L4Hdr); // page will have L4 Hdr
+                    uint8_t rxPgOfst = 0; // page will have L4 Hdr
 
                     PduHdr pduHdr = PduHdr{
                         .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU), 0xFF},
@@ -1565,17 +1507,17 @@ TEST_P(MultiHop, pduHopFrwd)
                                     idx[port2],
                                     size,
                                     TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-                                    (msg.data() + (sizeof(L2Hdr) + sizeof(L3Hdr))),
-                                    (msg.size() - (sizeof(L2Hdr) + sizeof(L3Hdr))), /* L4 hdr is part of page buffer */
+                                    (msg.data() + (sizeof(PduHdr))),
+                                    (msg.size() - (sizeof(PduHdr))), /* L4 hdr is part of page buffer */
                                     pduHdr);
                 }
             }
         }
     }
 }
-//#endif
+#endif
 
-#if 0
+//#if 0
 TEST_P(MultiHop, pduHopFrwdBrdCst)
 {
     MockUart mock;
@@ -1699,16 +1641,13 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
                             idx[port2],
                             size,
                             TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-                            (msg.data() + (sizeof(L2Hdr) + sizeof(L3Hdr))),
-                            (msg.size() - (sizeof(L2Hdr) + sizeof(L3Hdr))), /* L4 hdr is part of page buffer */
+                            (msg.data() + (sizeof(PduHdr))),
+                            (msg.size() - (sizeof(PduHdr))), /* L4 hdr is part of page buffer */
                             pduHdr);
         }
     }
 }
-#endif
-//TEST_P(MultiHop, l2test) {
-//
-//}
+//#endif
 
 // route tables
 static constexpr std::array<uint16_t, MAX_SUBNET> makeL3RouteTablePos1()
@@ -1862,388 +1801,6 @@ static constexpr std::array<std::array<uint16_t, MAX_PORT>, MAX_POS> l3AddrTblPr
     {0x0103, 0x0000}  // pos 7
 } };
 
-
-#if 0
-TEST_P(MultiHop, pduHopFrwd)
-{
-    MockUart mock;
-    g_mock = &mock;
-    testing::InSequence seq;
-    // construct message
-    static const int MSG_SIZE = 100;
-    std::array<uint8_t, MSG_SIZE> msg;
-    for (int i = 0; i < MSG_SIZE; i++)
-    {
-        msg[i] = i;
-    }
-
-    PduHdr pduHdr{};
-
-    uint8_t idx[MAX_PORT];
-    
-    for (int subnet = 0; subnet < MAX_SUBNET; subnet++) {
-        if (GetParam().l3RouteTable[subnet])
-        {
-            PosType_t gatewayPos = MAX_POS;
-            
-            // identify the gateway pos
-            for (int peerPos = 0; peerPos < MAX_POS; peerPos++)
-            {
-                if (peerPos == GetParam().pos)
-                {
-                    continue;
-                }
-                
-                std::array<std::array<uint16_t, MAX_PORT>, MAX_POS> l3AddrTblForPos;
-                switch (peerPos)
-                {
-                case 1:
-                    l3AddrTblForPos = l3AddrTblPrioPos1;
-                    break;
-                case 2:
-                    l3AddrTblForPos = l3AddrTblPrioPos2;
-                    break;
-                case 3:
-                    l3AddrTblForPos = l3AddrTblPrioPos3;
-                    break;
-                case 5:
-                    l3AddrTblForPos = l3AddrTblPrioPos5;
-                    break;
-                default:
-                    l3AddrTblForPos = l3AddrTblPrioPos7;
-                    break;
-                }
-
-                for (int port = 0; port < MAX_PORT; port++) {
-
-                    if (l3AddrTblForPos[peerPos][port] == GetParam().l3RouteTable[subnet])
-                    {
-                        gatewayPos = peerPos;
-                        break;
-                    }
-                }
-
-                if (gatewayPos != MAX_POS) {
-                    break;
-                }
-            }
-            ASSERT_NE(gatewayPos, MAX_POS);
-
-            // find a Dst addr on this distant subnet
-            uint16_t l3DstAddr = 0;
-            for (int pos = 0; pos < MAX_POS; pos++)
-            {
-                // find a dst dev on port to forward
-                if (pos == GetParam().pos ||
-                    pos == gatewayPos)
-                {
-                    continue;
-                }
-                for (int port = 0; port < MAX_PORT; port++)
-                {
-                    uint8_t subnet2 = GetParam().l3AddrTblPrio[pos][port] >> 8;
-                    if (subnet2 == subnet)
-                    {
-                        l3DstAddr = GetParam().l3AddrTblPrio[pos][port];
-                        break;
-                    }
-                }
-
-                if (l3DstAddr)
-                {
-                    break;
-                }
-            }
-
-            // find the port on this gateways subnet
-#if 0
-            uint8_t gatewayPort = MAX_PORT;
-            uint8_t gatewaySubnet = GetParam().l3RouteTable[subnet] >> 8;
-            for (int port = 0; port < MAX_PORT; port++)
-            {
-                uint8_t portSubnet = GetParam().l3AddrTblPrio[GetParam().pos][port] >> 8;
-                if (portSubnet == gatewaySubnet)
-                {
-                    gatewayPort = port;
-                    break;
-                }
-            }
-            
-            for (int port = 0; port < MAX_PORT; port++) {
-                if (port == gatewayPort) {
-                    continue;
-                }
-                
-                // 
-            }
-            
-            ASSERT_NE(gatewayPort, MAX_PORT);
-#endif
-        }
-    }
-
-#if 0
-    for (int peerPos = 1; peerPos < MAX_POS; peerPos++)
-    {
-        // find a pos that has this pos as a gateway
-        if (peerPos == GetParam().pos)
-        {
-            continue;
-        }
-
-        std::array<uint16_t, MAX_SUBNET> l3RouteTableForPos;
-
-        switch (peerPos)
-        {
-        case 1:
-            l3RouteTableForPos = makeL3RouteTablePos1();
-            break;
-        case 2:
-            l3RouteTableForPos = makeL3RouteTablePos2();
-            break;
-        case 3:
-            l3RouteTableForPos = makeL3RouteTablePos3();
-            break;
-        case 5:
-            l3RouteTableForPos = makeL3RouteTablePos5();
-            break;
-        default:
-            l3RouteTableForPos = makeL3RouteTablePos7();
-            break;
-        }
-
-                for (int port = 0; port < MAX_PORT; port++)
-                {
-                    if (l3RouteTableForPos[subnet] == GetParam().l3AddrTblPrio[GetParam().pos][port])
-                    {
-                        // this port is a gateway to peerPos
-
-                        // find a dest on this subnet
-                        uint16_t l3DstAddr = 0;
-                        for (int peerPos2 = 1; peerPos2 < MAX_POS; peerPos2++)
-                        {
-                            // find a dst dev on port to forward
-                            if (peerPos2 == GetParam().pos ||
-                                peerPos2 == peerPos)
-                            {
-                                continue;
-                            }
-                            for (int port2 = 0; port2 < MAX_PORT; port2++)
-                            {
-                                uint8_t subnet2 = GetParam().l3AddrTblPrio[peerPos2][port2] >> 8;
-                                if (subnet2 == subnet)
-                                {
-                                    l3DstAddr = GetParam().l3AddrTblPrio[peerPos2][port2];
-                                    break;
-                                }
-                            }
-                            if (l3DstAddr)
-                            {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-
-    for (int port = 0; port < MAX_PORT; port++)
-    {
-        // confirm UART TX is disabled
-        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
-
-        uint16_t l3Addr = GetParam().l3AddrTblPrio[GetParam().pos][port];
-        uint8_t l2Addr = (l3Addr & 0x00FF);
-        if (l2Addr == 0 || GetParam().devCnt[port] <= 1) // TODO what if in debug if we keep addr
-        {
-            continue;
-        }
-
-        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
-
-        uint16_t l3SrcAddr = 0;
-
-        for (int pos = 0; pos < MAX_POS; pos++)
-        {
-            // find a dst dev on port to forward
-            if (pos == GetParam().pos)
-            {
-                continue;
-            }
-
-            for (int port3 = 0; port3 < MAX_PORT; port3++)
-            {
-                uint8_t subnet = GetParam().l3AddrTblPrio[pos][port3] >> 8;
-                if (subnet == (l3Addr >> 8))
-                {
-                    l3SrcAddr = GetParam().l3AddrTblPrio[pos][port3];
-                    break;
-                }
-            }
-
-            if (l3SrcAddr)
-            {
-                break;
-            }
-        }
-
-        ASSERT_NE(l3SrcAddr, 0);
-
-        /* Packet arriving in this port should forward to other port */
-        for (int port2 = 0; port2 < MAX_PORT; port2++)
-        {
-            if (port == port2)
-            {
-                continue;
-            }
-
-            uint16_t l3Addr2 = GetParam().l3AddrTblPrio[GetParam().pos][port2];
-            uint8_t l2Addr2 = (l3Addr2 & 0x00FF);
-
-            if (l2Addr2 == 0 || GetParam().devCnt[port] <= 1) // TODO what if in debug if we keep addr
-            {
-                continue;
-            }
-
-            // confirm RX is enabled
-            ASSERT_EQ((uart_objs[port2].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
-
-            uint16_t l3DstAddr = 0;
-
-            for (int pos = 0; pos < MAX_POS; pos++)
-            {
-                // find a dst dev on port to forward
-                if (pos == GetParam().pos)
-                {
-                    continue;
-                }
-                for (int port3 = 0; port3 < MAX_PORT; port3++)
-                {
-                    uint8_t subnet = GetParam().l3AddrTblPrio[pos][port3] >> 8;
-                    if (subnet == (l3Addr2 >> 8))
-                    {
-                        l3DstAddr = GetParam().l3AddrTblPrio[pos][port3];
-                        break;
-                    }
-                }
-
-                if (l3DstAddr)
-                {
-                    break;
-                }
-            }
-
-            ASSERT_NE(l3DstAddr, 0);
-
-            uint8_t rxPgOfst = sizeof(L4Hdr); // page will have L4 Hdr
-
-            PduHdr pduHdr = PduHdr{
-                .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU), 0xFF},
-                .l3hdr = {l3SrcAddr, l3DstAddr, 1, 0},
-                .l4hdr = {0, 0, 0}};
-
-            memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
-
-            // send msg to port 1
-            sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
-                       msg.size(), port);
-
-            // send MST to port 2
-            sendMstToken(mock, uart_ptrs[port2], l2Addr2, port2);
-
-            // will send message
-
-            // first expect hdr
-            pduHdr = PduHdr{
-                .l2hdr = {l3DstAddr, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST), 0xFF},
-                .l3hdr = {l3SrcAddr, l3DstAddr, 1, 0},
-                .l4hdr = {0, 0, 0}};
-
-            uint8_t size;
-
-            expectFrwdFrame(mock,
-                            uart_ptrs[port2],
-                            port2,
-                            idx[port2],
-                            size,
-                            TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-                            (msg.data() + (sizeof(L2Hdr) + sizeof(L3Hdr))),
-                            (msg.size() - (sizeof(L2Hdr) + sizeof(L3Hdr))), /* L4 hdr is part of page buffer */
-                            pduHdr);
-
-            /* Send msg for active gateways */
-            for (int subnet = 0; subnet < MAX_SUBNET; subnet++)
-            {
-                if (GetParam().l3RouteTable[subnet])
-                {
-                    l3DstAddr = 0;
-                    for (int pos = 0; pos < MAX_POS; pos++)
-                    {
-                        // find a dst dev on port to forward
-                        if (pos == GetParam().pos)
-                        {
-                            continue;
-                        }
-                        for (int port3 = 0; port3 < MAX_PORT; port3++)
-                        {
-                            uint8_t subnet2 = GetParam().l3AddrTblPrio[pos][port3] >> 8;
-                            if (subnet2 == subnet)
-                            {
-                                l3DstAddr = GetParam().l3AddrTblPrio[pos][port3];
-                                break;
-                            }
-                        }
-
-                        if (l3DstAddr)
-                        {
-                            break;
-                        }
-                    }
-
-                    PduHdr pduHdr = PduHdr{
-                        .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU), 0xFF},
-                        .l3hdr = {l3SrcAddr, l3DstAddr, 1, 0},
-                        .l4hdr = {0, 0, 0}};
-
-                    memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
-
-                    rxPgOfst = sizeof(L4Hdr); // page will have L4 Hdr
-
-                    // send msg to port 1
-                    sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
-                               msg.size(), port);
-
-                    // send MST to port 2
-                    sendMstToken(mock, uart_ptrs[port2], l2Addr2, port2);
-
-                    // will send message
-
-                    // first expect hdr
-                    pduHdr = PduHdr{
-                        .l2hdr = {l3DstAddr, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST), 0xFF},
-                        .l3hdr = {l3SrcAddr, l3DstAddr, 1, 0},
-                        .l4hdr = {0, 0, 0}};
-
-                    uint8_t size;
-
-                    expectFrwdFrame(mock,
-                                    uart_ptrs[port2],
-                                    port2,
-                                    idx[port2],
-                                    size,
-                                    TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-                                    (msg.data() + (sizeof(L2Hdr) + sizeof(L3Hdr))),
-                                    (msg.size() - (sizeof(L2Hdr) + sizeof(L3Hdr))), /* L4 hdr is part of page buffer */
-                                    pduHdr);
-                }
-            }
-        }
-    }
-#endif
-}
-#endif
 INSTANTIATE_TEST_SUITE_P(
     Runs, MultiHop,
     ::testing::Values(

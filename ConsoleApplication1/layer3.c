@@ -30,6 +30,9 @@ static inline bool l3Multicst(const L3Hdr *const l3Hdr, const uint8_t port)
 #define MAX_FORWARD_QUEUE 4 // power of 2
 #define MAX_FORWARD_QUEUE_MASK (MAX_FORWARD_QUEUE - 1u)
 L3Pkt l3FrwdQ[MAX_PORT][MAX_PRIORITY][MAX_FORWARD_QUEUE];
+PgPtr_t l3FrwdPgPtrQ[MAX_PORT][MAX_PRIORITY][MAX_FORWARD_QUEUE];
+/* Keep one page ptr for the RX Frwd Pkt */
+PgPtr_t l3RxFrwdPktPgPtr[MAX_PORT];
 
 static uint8_t l3FrwdQHead[MAX_PORT][MAX_PRIORITY];
 static uint8_t l3FrwdQTail[MAX_PORT][MAX_PRIORITY];
@@ -42,11 +45,12 @@ static inline void l3FrwdQInit(void)
 	// invalidate the page ptrs
 	for (uint8_t port = 0; port < MAX_PORT; port++)
 	{
+		pgPtrInit(&l3RxFrwdPktPgPtr[port]);
 		for (uint8_t prio = 0; prio < MAX_PRIORITY; prio++)
 		{
 			for (uint8_t queueIdx = 0; queueIdx < MAX_FORWARD_QUEUE; queueIdx++)
 			{
-				pgPtrInit(&l3FrwdQ[port][prio][queueIdx].pkt.frwdPkt);
+				pgPtrInit(&l3FrwdPgPtrQ[port][prio][queueIdx]);
 			}
 		}
 	}
@@ -56,12 +60,14 @@ static inline void l3FrwdQInit(void)
 	memset(l3FrwdQCount, 0, sizeof(l3FrwdQCount));
 }
 
-static inline bool getL3FrwdPktHd(L3Pkt *l3Pkt, uint8_t *hd, uint8_t *ofst)
+static inline bool getL3FrwdPktHd(const uint8_t port, const uint8_t prio, uint8_t *hd, uint8_t *ofst)
 {
-	if (l3Pkt->pkt.frwdPktPtr)
+	const uint8_t frwdQHd = l3FrwdQHead[port][prio];
+	PgPtr_t *frwdPgPtr = &l3FrwdPgPtrQ[port][prio][frwdQHd];
+	if (frwdPgPtr->hdPg != INVALID_PAGE)
 	{ // could be message with just a hdr
-		*ofst = l3Pkt->pkt.frwdPktPtr->hdOfst;
-		*hd = l3Pkt->pkt.frwdPktPtr->hdPg;
+		*ofst = frwdPgPtr->hdOfst;
+		*hd = frwdPgPtr->hdPg;
 		return false;
 	}
 	return true;
@@ -69,9 +75,10 @@ static inline bool getL3FrwdPktHd(L3Pkt *l3Pkt, uint8_t *hd, uint8_t *ofst)
 
 static inline void l3FwdTxCmplt(L3Pkt *l3Pkt, const uint8_t port)
 {
-	// free the allocated pages
-	freePgPtr(l3Pkt->pkt.frwdPktPtr);
 	const uint8_t prio = l3Pkt->hdr.prio;
+	// free the allocated pages
+	const uint8_t frwdQHd = l3FrwdQHead[port][prio];
+	freePgPtr(&l3FrwdPgPtrQ[port][prio][frwdQHd]);
 	// free the forward queue
 	l3FrwdQHead[port][prio] = (uint8_t)((l3FrwdQHead[port][prio] + 1u) % MAX_FORWARD_QUEUE);
 	l3FrwdQCount[port][prio]--;
@@ -103,14 +110,14 @@ static inline bool passMstFrwd(const uint8_t port, const uint8_t prioIdx)
 	return passMst(port, prioIdx, 0); // check from pos 0 of this prio if there is a pending high prio stream or frwd pkt
 }
 
-static inline uint8_t getL3FrwdPktFrag(L3Pkt *const l3Pkt, uint8_t **ptr, uint8_t idx, uint8_t *txHd, uint8_t *txHdOfst, uint8_t txLen)
+static inline uint8_t getL3FrwdPktFrag(PgPtr_t *frwdPgPtr, uint8_t **ptr, uint8_t idx, uint8_t *txHd, uint8_t *txHdOfst, uint8_t txLen)
 {
 	const uint16_t base = pageOff(*txHd) + (uint16_t)(*txHdOfst);
 
 	*ptr = &g_pool[base];
 
 	// cap tx len
-	uint8_t len = (*txHd == l3Pkt->pkt.frwdPktPtr->tlPg ? (l3Pkt->pkt.frwdPktPtr->tlUsd - *txHdOfst) : (UNIT - (*txHdOfst)));
+	uint8_t len = (*txHd == frwdPgPtr->tlPg ? (frwdPgPtr->tlUsd - *txHdOfst) : (UNIT - (*txHdOfst)));
 
 	if (len <= txLen)
 	{ // we are at the end of current page
@@ -133,43 +140,31 @@ static inline uint8_t getL3RxFrwdPktFrag(PgPtr_t *const frwdPktPtr, uint8_t **pt
 	return len;
 }
 
-static inline L3Pkt *l3PushFrwdPkt(L3Pkt *const l3Pkt, const uint8_t port)
+static inline PgPtr_t * l3PushFrwdPkt(L3Pkt *const l3Pkt, const uint8_t port)
 {
 	const uint8_t prio = l3Pkt->hdr.prio;
 
-	if ((prio > MAX_PRIORITY) ||
-		(l3FrwdQCount[port][prio] >= MAX_FORWARD_QUEUE))
-	{
+	if (l3FrwdQCount[port][prio] >= MAX_FORWARD_QUEUE) {
 		// TODO do we tx L3 forward Queue full or prio error?
 		return NULL; /* full */
 	}
-
-	L3Pkt *l3FrwdPkt = &l3FrwdQ[port][prio][l3FrwdQTail[port][prio]];
-
+	
+	const uint8_t frwdQIdx = l3FrwdQTail[port][prio];
+	L3Pkt *l3FrwdPkt = &l3FrwdQ[port][prio][frwdQIdx];
+	
 	/* Copy the header */
-	memcpy(&l3FrwdPkt->hdr, &l3Pkt->hdr, sizeof(L3Hdr));
+	memcpy(l3FrwdPkt, l3Pkt, sizeof(L3Hdr) + sizeof(L4Hdr));
 
 	l3FrwdQTail[port][prio] = (uint8_t)((l3FrwdQTail[port][prio] + 1u) % MAX_FORWARD_QUEUE);
 	l3FrwdQCount[port][prio]++;
-	return l3FrwdPkt;
-}
-
-static inline bool l3PushFrwdPktUnicst(L3Pkt *const l3Pkt, const uint8_t port)
-{
-	L3Pkt *l3FrwdPkt = l3PushFrwdPkt(l3Pkt, port);
-	if (l3FrwdPkt)
-	{
-		l3Pkt->pkt.frwdPktPtr = &l3FrwdPkt->pkt.frwdPkt;
-		return true;
-	}
-	return false;
+	return &l3FrwdPgPtrQ[port][prio][frwdQIdx];
 }
 
 static inline void l3BrdCst(const uint8_t port, L3Pkt *const l3Pkt)
 {
 	const L3Hdr *l3Hdr = &l3Pkt->hdr;
 	const uint8_t portSubnet = l3AddrTblPrio[myPos][port] >> 8;
-	bool ret = false;
+	const uint8_t prio = l3Hdr->prio;
 
 	for (int peerPort = 0; peerPort < MAX_PORT; peerPort++)
 	{
@@ -179,13 +174,13 @@ static inline void l3BrdCst(const uint8_t port, L3Pkt *const l3Pkt)
 		}
 
 		// check brdcast table
-		if (l3BcastInSubnetForSrcPort[l3Pkt->pkt.l4Pkt.pos][peerPort] == portSubnet)
+		if (l3BcastInSubnetForSrcPort[l3Pkt->l4Pkt.pos][peerPort] == portSubnet)
 		{
-			ret = true;
-			L3Pkt *l3FrwdPkt = l3PushFrwdPkt(l3Pkt, peerPort);
-			if (l3FrwdPkt)
-			{
-				l4RxGetLastFrame(l3Hdr->prio, &l3Pkt->pkt.l4Pkt, &l3FrwdPkt->pkt.frwdPkt);
+			PgPtr_t *frwdQPgPtr = l3PushFrwdPkt(l3Pkt, peerPort);
+			if (frwdQPgPtr) {
+				l4RxGetLastFrame(prio, &l3Pkt->l4Pkt, frwdQPgPtr);
+			} else {
+				/* Todo do we xmit to sender ? */
 			}
 		}
 	}
@@ -208,31 +203,7 @@ void l3TxCmplt(L3Pkt* l3Pkt, const uint8_t port) {
 		return;
 	}
 #endif
-	l4TxCmplt(&l3Pkt->pkt.l4Pkt, l3Hdr->prio);
-}
-
-uint8_t l3GetTxPktHdrSize(L3Pkt *l3Pkt, uint8_t port) {
-	L3Hdr *l3Hdr = &l3Pkt->hdr;
-
-#if MAX_PORT > 1
-	if (l3TxfrwdPkt(l3Hdr, port)) {
-		return sizeof(L3Hdr);
-	}
-#endif
-	return sizeof(L3Hdr) + sizeof(L4Hdr);
-}
-
-uint8_t l3GetRxPktHdrSize(L3Pkt *l3Pkt, uint8_t port)
-{
-	L3Hdr *l3Hdr = &l3Pkt->hdr;
-
-#if MAX_PORT > 1
-	if (l3RxfrwdPkt(l3Hdr, port)) {
-		return sizeof(L3Hdr); // forward packet
-	}
-#endif
-
-	return sizeof(L3Hdr) + sizeof(L4Hdr);
+	l4TxCmplt(&l3Pkt->l4Pkt, l3Hdr->prio);
 }
 
 bool getL3PktHd(L3Pkt *l3Pkt, uint8_t *hd, uint8_t *ofst, uint8_t port)
@@ -241,11 +212,11 @@ bool getL3PktHd(L3Pkt *l3Pkt, uint8_t *hd, uint8_t *ofst, uint8_t port)
 
 #if MAX_PORT > 1
 	if (l3TxfrwdPkt(l3Hdr, port)) {
-		return getL3FrwdPktHd(l3Pkt, hd, ofst);
+		return getL3FrwdPktHd(port, l3Hdr->prio, hd, ofst);
 	}
 #endif
 
-	return getL4PktHd(&l3Pkt->pkt.l4Pkt, l3Hdr->prio, hd, ofst);
+	return getL4PktHd(&l3Pkt->l4Pkt, l3Hdr->prio, hd, ofst);
 }
 
 void l3AbortRx(L3Pkt* const l3Pkt, const uint8_t port) {
@@ -253,12 +224,12 @@ void l3AbortRx(L3Pkt* const l3Pkt, const uint8_t port) {
 
 #if MAX_PORT > 1
 	if (l3TxfrwdPkt(l3Hdr, port)) {
-		/* TODO abort frwd Rx */
+		freePgPtr(&l3RxFrwdPktPgPtr[port]);
 		return;
 	}
 #endif
 
-	l4AbortRx(&l3Pkt->pkt.l4Pkt, l3Hdr->prio);
+	l4AbortRx(&l3Pkt->l4Pkt, l3Hdr->prio);
 }
 
 uint8_t setL3Hdr(L3Pkt * l3Pkt, uint8_t port, uint8_t prio, uint16_t pos) {
@@ -267,7 +238,7 @@ uint8_t setL3Hdr(L3Pkt * l3Pkt, uint8_t port, uint8_t prio, uint16_t pos) {
 	l3Hdr->ttl = 1;
 	l3Hdr->prio = prio;
 	l3Hdr->dst = l3AddrTblPrio[pos][L3_DST_ADDR_IDX];
-	setL4Hdr(&l3Pkt->pkt.l4Pkt, prio);
+	setL4Hdr(&l3Pkt->l4Pkt, prio);
 	const uint8_t dstSubnet = (l3Hdr->dst & 0xFF00) >> 8;
 	const uint8_t portSubnet = ((l3Hdr->src & 0xFF00) >> 8);
 	return ((dstSubnet == portSubnet)? l3Hdr->dst: l3RouteTable[dstSubnet]) & 0x00FF; // return l2Addr
@@ -342,7 +313,7 @@ void l3premptLowPrioPending(L3Pkt* l3Pkt, uint16_t* posIdx, uint8_t* prioIdx) {
 	for (uint8_t prio = prioIdx; prio < MAX_PRIORITY; prio++) {
 		for (int pos = 0; pos < MAX_POS; pos++) {
 			if (l4StrmPnding(pos, prio)) { // prempt with this stream
-				if (getL4Pkt(&l3Pkt->pkt.l4Pkt, pos, prio, l3Hdr->prio)) {
+				if (getL4Pkt(&l3Pkt->l4Pkt, pos, prio, l3Hdr->prio)) {
 					*posIdx = pos;
 					*prioIdx = prio;
 					return;
@@ -366,9 +337,9 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 			/* TODO what if we are still being filled from other port */
 			
 			/* Copy the header */
-			L3Pkt *l3FrwdPkt = &l3FrwdQ[port][prio][l3FrwdQHead[port][prio]];
-			memcpy(&l3Pkt->hdr, &l3FrwdPkt->hdr, sizeof(L3Hdr));
-			l3Pkt->pkt.frwdPktPtr = &l3FrwdPkt->pkt.frwdPkt;
+			const uint8_t frwdQHd = l3FrwdQHead[port][prio];
+			L3Pkt *l3FrwdPkt = &l3FrwdQ[port][prio][frwdQHd];
+			memcpy(l3Pkt, l3FrwdPkt, (sizeof(L3Hdr) + sizeof(L4Hdr)));
 			*l2Addr = l3Pkt->hdr.dst;
 			// TODO MST pass ?
 			*xferMst = passMstFrwd(port, prio);
@@ -384,7 +355,7 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 			const uint8_t gatewaySubnet = (l3RouteTable[dstSubnet] & 0xFF00) >> 8;
 			
 			if (((dstSubnet == portSubnet) || (gatewaySubnet == portSubnet)) &&
-					getL4Pkt(&l3Pkt->pkt.l4Pkt, pos, prio, l3Hdr->prio)) { // prempt by txOrder (Automatically prempts with pending stream as its txOrder will be lower)
+					getL4Pkt(&l3Pkt->l4Pkt, pos, prio, l3Hdr->prio)) { // prempt by txOrder (Automatically prempts with pending stream as its txOrder will be lower)
 				if (dstPos != MAX_POS) {
 					txOrderPrempt = true;
 				}
@@ -394,7 +365,7 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 
 		if (dstPos != MAX_POS) { // send highest priority in tx order
 			if (prio >= LOW_PRIO_IDX) {
-				l3premptLowPrioPending(&l3Pkt->pkt.l4Pkt, &dstPos, &prio);
+				l3premptLowPrioPending(&l3Pkt->l4Pkt, &dstPos, &prio);
 				*xferMst = passMstStream(port, prio, dstPos);
 			}
 			else if (prio < LOW_PRIO_IDX) { 
@@ -417,11 +388,13 @@ uint8_t getL3PktFrag(L3Pkt* const l3Pkt, uint8_t** ptr, uint8_t idx, uint8_t * t
 
 #if MAX_PORT > 1
 	if (l3TxfrwdPkt(l3Hdr, port)) {
-		return getL3FrwdPktFrag(l3Pkt, ptr, idx, txHd, txHdOfst, txLen);
+		const uint8_t frwdQHd = l3FrwdQHead[port][l3Hdr->prio];
+		PgPtr_t * frwdPgPtr = &l3FrwdPgPtrQ[port][l3Pkt->hdr.prio][frwdQHd];
+		return getL3FrwdPktFrag(frwdPgPtr, ptr, idx, txHd, txHdOfst, txLen);
 	}
 #endif
 
-	return getL4PktFrag(&l3Pkt->pkt.l4Pkt, ptr, idx, txHd, txHdOfst, txLen, l3Hdr->prio);
+	return getL4PktFrag(&l3Pkt->l4Pkt, ptr, idx, txHd, txHdOfst, txLen, l3Hdr->prio);
 }
 
 static inline bool l3CmtL4RxHd(L3Pkt *l3Pkt)
@@ -436,7 +409,7 @@ static inline bool l3CmtL4RxHd(L3Pkt *l3Pkt)
 		{
 			if (l3Hdr->src == l3AddrTblPrio[pos][srcPort])
 			{
-				l4CmtRxHd(&l3Pkt->pkt.l4Pkt, pos, prio);
+				l4CmtRxHd(&l3Pkt->l4Pkt, pos, prio);
 				return true;
 			}
 		}
@@ -450,17 +423,11 @@ uint8_t getL3RxPktFrag(uint8_t port, L3Pkt *l3Pkt, uint8_t **ptr, uint8_t rxLen)
 
 #if MAX_PORT > 1
 	if (l3RxfrwdPkt(l3Hdr, port)) {
-		return getL3RxFrwdPktFrag(l3Pkt->pkt.frwdPktPtr, ptr, rxLen);
+		return getL3RxFrwdPktFrag(&l3RxFrwdPktPgPtr[port], ptr, rxLen);
 	}
 #endif
 
-	if (l4CmtRxPnding(&l3Pkt->pkt.l4Pkt)) {
-		if (!l3CmtL4RxHd(l3Pkt)){
-			return 0;
-		}
-	}
-
-	return getL4RxPktFrag(&l3Pkt->pkt.l4Pkt, ptr, rxLen, l3Hdr->prio);
+	return getL4RxPktFrag(&l3Pkt->l4Pkt, ptr, rxLen, l3Hdr->prio);
 }
 
 
@@ -500,14 +467,15 @@ bool l3CmtRxHd(L3Pkt *l3Pkt, const uint8_t port) { // called from L2
 			if ((dstSubnet == peerPortSubnet) ||
 				(gatewaySubnet == peerPortSubnet))
 			{ // forward on peer port
-				return l3PushFrwdPktUnicst(l3Pkt, peerPort);
+				l3Pkt->frwdPkt.dstPort = peerPort;
+				return true;
 			}
 		}
 		return false;
 	}
 #endif
 
-	return true;
+	return l3CmtL4RxHd(l3Pkt);
 }
 
 bool l3RxCmplt(uint8_t rxIdx) {
@@ -520,8 +488,6 @@ bool l3RxCmplt(uint8_t rxIdx) {
 	return true;
 }
 
-
-
 void l3CmtRx(L3Pkt * const l3Pkt, const uint8_t port)
 {
 	// check if message if for this device
@@ -533,12 +499,20 @@ void l3CmtRx(L3Pkt * const l3Pkt, const uint8_t port)
 	}
 	
 	if (l3RxfrwdPkt(l3Hdr, port)) {
-		/* Todo */
+		PgPtr_t *frwdQPgPtr = l3PushFrwdPkt(l3Pkt, l3Pkt->frwdPkt.dstPort);
+		if (frwdQPgPtr) {
+			/* copy pg ptr */
+			memcpy(frwdQPgPtr, &l3RxFrwdPktPgPtr[port], sizeof(PgPtr_t));
+			pgPtrInit(&l3RxFrwdPktPgPtr[port]);
+		} else {
+			/* Todo do we let the sender know  that frwd queue is full?*/
+			freePgPtr(&l3RxFrwdPktPgPtr[port]);
+		}
 		return;
 	}
 #endif
 
-	if (l4CmtRxPnding(&l3Pkt->pkt.l4Pkt)) { // hdr only message will no have identified stream yet ..
+	if (l4CmtRxPnding(&l3Pkt->l4Pkt)) { // hdr only message will no have identified stream yet ..
 		if (!l3CmtL4RxHd(l3Pkt)) {
 			return; // abort processing
 		}
@@ -551,5 +525,5 @@ void l3CmtRx(L3Pkt * const l3Pkt, const uint8_t port)
 	}
 #endif
 
-	l4CmtRx(&l3Pkt->pkt.l4Pkt, l3Hdr->prio);
+	l4CmtRx(&l3Pkt->l4Pkt, l3Hdr->prio);
 }

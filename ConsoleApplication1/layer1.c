@@ -256,7 +256,7 @@ void l1Tx(UART_Type* UARTptr, uint8_t port) {
 	uint8_t  txLen = UART_FIFO_SIZE - UARTptr->TCFIFO;
 	bool txCmplt;
 	do { //  write contigeous buffers into fifo
-		uint8_t* ptr;
+		uint8_t* ptr = NULL;
 		uint8_t  len;
 
 		txCmplt = l2GetTxPkt(port, &ptr, &len, txIndex[port], txLen, L2_XFER_TX); // return remaining len

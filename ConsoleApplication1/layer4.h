@@ -98,4 +98,6 @@ void l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio);
 void writeValToPage(stream_t *s, uint8_t *val, uint8_t len);
 
 bool l4CmtRxPnding(L4Pkt* l4Pkt);
+
+void l4RxGetLastFrame(const uint8_t prio, L4Pkt *l4Pkt, PgPtr_t *frame);
 #endif

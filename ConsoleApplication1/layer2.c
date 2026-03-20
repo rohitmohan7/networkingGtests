@@ -92,7 +92,7 @@ void l2CmtRx(port) {
 
 	uint8_t rxType = l2RxPktDesc[port].l2RxPkt.hdr.type;
 
-	l2RxPktDesc[port].abort = false; // 
+	l2RxPktDesc[port].abort = false; // prime for next message
 
 	if (rxType == L2_PKT_TYPE_INVALID) {
 		return;
@@ -184,29 +184,22 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 		// pkt has only hdr
 		return true;
 	case L2_PKT_TYPE_PDU:
-		L3Pkt* l3Pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu;
-		const uint8_t pduHdrSize = sizeof(L2Hdr) + l3GetTxPktHdrSize(l3Pkt, port);
-
-		if (idx < pduHdrSize)
+		L3Pkt *l3Pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu;
+		if (idx < sizeof(PduHdr))
 		{
-
 			if (!ptr) { // if ptr was not already set
 				*ptr = ((uint8_t *)&l2TxPktDesc[port].l2TxPkt.hdr) + idx;
 			}
 
-			*len = pduHdrSize - idx; // reset length
+			*len = sizeof(PduHdr) - idx; // reset length
 
-			if (txRxFifoLen + idx >= pduHdrSize) // hdr will be sent in the call
-			{
-				// call once
-				return getL3PktHd(l3Pkt, &tx_pdu_head[xfer][port], &tx_pdu_hd_off[xfer][port], port);
-			}
-			//return false;
+			return getL3PktHd(l3Pkt, &tx_pdu_head[xfer][port], &tx_pdu_hd_off[xfer][port], port);
 		}
-		else {
+		else
+		{
 
 			*len = getL3PktFrag(&l2TxPktDesc[port].l2TxPkt.msg.pdu,
-								ptr, (idx - pduHdrSize),
+								ptr, (idx - sizeof(PduHdr)),
 								&tx_pdu_head[xfer][port],
 								&tx_pdu_hd_off[xfer][port],
 								txRxFifoLen,
@@ -233,8 +226,9 @@ bool l2RxAborted(uint8_t port) {
 
 static inline void l2AbortRx(uint8_t port) {
 	l2RxPktDesc[port].abort = true;
-	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_INVALID;
-	l2TxPktDesc[port].l2TxPkt.hdr.addr = 0x00;
+	l2RxPktDesc[port].l2RxPkt.hdr.type = L2_PKT_TYPE_INVALID;
+	l2RxPktDesc[port].l2RxPkt.hdr.addr = 0x00;
+	l3AbortRx(&l2RxPktDesc[port].l2RxPkt.msg.pdu);
 }
 
 void l2AbortXfer(uint8_t port) {
@@ -271,26 +265,19 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 	switch (type) {
 	case L2_PKT_TYPE_PDU:
 
-		if (idx < sizeof(L3Hdr)) // get L3 Hdr to determine if its a forward pkt
+		if (idx < sizeof(PduHdr))
 		{
 			*ptr = ((uint8_t *)&l2RxPktDesc[port].l2RxPkt.hdr) + idx;
-			len = sizeof(L3Hdr) - (idx - sizeof(L2Hdr));
+			len = sizeof(PduHdr) - idx;
 		}
-		else { // todo
-
-			if (idx == sizeof(L2Hdr) + sizeof(L3Hdr)) {
-				if (!l3CmtRxHd(&l2RxPktDesc[port].l2RxPkt.msg.pdu, port)) {
+		else
+		{ // todo
+			if (idx == sizeof(PduHdr))
+			{ // we just got hdr identify and prime rx
+				if (!l3CmtRxHd(&l2RxPktDesc[port].l2RxPkt.msg.pdu, port))
+				{
 					return 0;
 				}
-			}
-
-			const uint8_t pduHdrSize = sizeof(L2Hdr) + l3GetRxPktHdrSize(&l2RxPktDesc[port].l2RxPkt.msg.pdu, port);
-
-			if (idx < pduHdrSize)
-			{
-				*ptr = ((uint8_t *)&l2RxPktDesc[port].l2RxPkt.hdr) + idx;
-				len = pduHdrSize - idx;
-				return len;
 			}
 
 			len = getL3RxPktFrag(port, &l2RxPktDesc[port].l2RxPkt.msg.pdu, ptr, rxLen);

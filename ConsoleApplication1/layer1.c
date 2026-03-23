@@ -184,7 +184,7 @@ void l1TxCmplt(uint8_t port) {
 	l2TxCmplt(port);
 }
 
-static inline uint8_t crc8Smbus(const uint8_t byte,
+static inline L2Crc_t crc8Smbus(const uint8_t byte,
 								L2Crc_t crc)
 {
 	const uint8_t poly = 0x07;
@@ -199,8 +199,21 @@ static inline uint8_t crc8Smbus(const uint8_t byte,
 	return crc;
 }
 
+static inline L2Crc_t crc8SmbusContigeous(L2Crc_t crc,
+								const uint8_t *data,
+								size_t size)
+{
+	const uint8_t poly = 0x07;
+
+	for (size_t i = 0; i < size; i++)
+	{
+		crc = crc8Smbus(data[i], crc);
+	}
+	return crc;
+}
+
 #ifndef UNIT_TEST //pheripheral functions
-static void l1UARTWriteNonBlocking(UART_Type *UARTptr, const uint8_t *data, size_t length, l2Crc * crcPtr)
+static void l1UARTWriteNonBlocking(UART_Type *UARTptr, const uint8_t *data, size_t length, L2Crc_t * crcPtr)
 {
 	assert(data != NULL);
 
@@ -235,7 +248,7 @@ static bool l1UARTCmpNonBlocking(UART_Type* UARTptr, uint8_t* data, size_t lengt
 	return true;
 }
 
-static void l1UARTReadNonBlocking(UART_Type* UARTptr, uint8_t* data, size_t length)
+static inline void L2Crc_t l1UARTReadNonBlocking(UART_Type *UARTptr, uint8_t *data, size_t length, L2Crc_t *crcPtr)
 {
 	assert(data != NULL);
 
@@ -245,28 +258,72 @@ static void l1UARTReadNonBlocking(UART_Type* UARTptr, uint8_t* data, size_t leng
 	peripheral to write. */
 	for (i = 0; i < length; i++)
 	{
+		if (crcPtr) {
+			*crcPtr = crc8Smbus(data[i], *crcPtr);
+		}
 		data[i] = UARTptr->D;
 	}
 }
 #endif
 
-
 static inline bool l1Rx(const UART_Type* const UARTptr, uint8_t port) {
 	// Tx from layer 2 packets
-	uint8_t  rxLen = UARTptr->RCFIFO;
-	do {
-		uint8_t* ptr;
-		uint8_t len = l2GetRxPkt(port, &ptr, rxLen, rxIndex[port]); // return remaining len
+	uint8_t rxLen = UARTptr->RCFIFO;
+	uint8_t *crcBuf = (uint8_t *)l2GetRxCrc(port);
+	const uint8_t crcSize = (uint8_t)sizeof(L2Crc_t);
 
-		if (len == 0) {
-			// abort Rx
+	while (rxLen > 0)
+	{
+		uint8_t crcFill = min(rxIndex[port], crcSize);
+
+		/* Fill crc tail first until it reaches crcSize bytes */
+		if (crcFill < crcSize)
+		{
+			uint8_t fill = min((uint8_t)(crcSize - crcFill), rxLen);
+
+			l1UARTReadNonBlocking(UARTptr, crcBuf + crcFill, fill, NULL);
+
+			rxIndex[port] += fill; /* total UART bytes seen */
+			rxLen -= fill;
+			continue;
+		}
+
+		/* After crc tail is full, each new byte releases one old tail byte to payload */
+		uint8_t payloadIndex = (uint8_t)(rxIndex[port] - crcSize);
+
+		uint8_t *ptr;
+		uint8_t avail = l2GetRxPkt(port, &ptr, rxLen, payloadIndex);
+		if (avail == 0)
+		{
 			return false;
 		}
-		uint8_t rxLenMin = min(len, rxLen);
-		l1UARTReadNonBlocking(UARTptr, ptr, rxLenMin);
-		rxLen -= rxLenMin;
-		rxIndex[port] += rxLenMin;
-	} while (rxLen > 0);
+
+		uint8_t n = min(avail, rxLen);
+
+		if (n < crcSize)
+		{
+			memcpy(ptr, crcBuf, n);
+			memmove(crcBuf, crcBuf + n, crcSize - n);
+			l1UARTReadNonBlocking(UARTptr, crcBuf + (crcSize - n), n, NULL);
+		}
+		else
+		{
+			uint8_t direct = (uint8_t)(n - crcSize);
+			L2Crc_t * calcCrc = l2GetRxCalcCrc(port);
+			memcpy(ptr, crcBuf, crcSize);
+			*calcCrc = crc8SmbusContigeous(*calcCrc, crcBuf, crcSize);
+
+			if (direct > 0)
+			{
+				l1UARTReadNonBlocking(UARTptr, ptr + crcSize, direct, calcCrc);
+			}
+
+			l1UARTReadNonBlocking(UARTptr, crcBuf, crcSize, NULL);
+		}
+
+		rxIndex[port] += n; /* total UART bytes seen */
+		rxLen -= n;
+	}
 	return true;
 }
 

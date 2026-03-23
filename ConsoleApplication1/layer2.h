@@ -71,6 +71,7 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
 	L2Pkt l2RxPkt;
 	bool  abort;
+	uint8_t calcCrc;
 } L2RxPktDesc; // 9 bytes
 //_Static_assert(sizeof(L2TxPktDesc) == 9, "L2TxPktDesc wrong size");
 
@@ -98,5 +99,9 @@ bool l2RxAborted(uint8_t port);
 void l2AbortXfer(uint8_t port);
 
 L2Crc_t * l2GetTxCrc(const uint8_t port);
+
+L2Crc_t * l2GetRxCalcCrc(const uint8_t port);
+
+L2Crc_t * l2GetRxCrc(const uint8_t port);
 #endif // ! L2_NETWORK
 

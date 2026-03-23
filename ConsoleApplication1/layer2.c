@@ -63,6 +63,14 @@ L2Crc_t * l2GetTxCrc(const uint8_t port) {
 	return &l2TxPktDesc[port].l2TxPkt.crc;
 }
 
+L2Crc_t * l2GetRxCrc(const uint8_t port){
+	return &l2RxPktDesc[port].l2RxPkt.crc;
+}
+
+L2Crc_t * l2GetRxCalcCrc(const uint8_t port) {
+	return &l2RxPktDesc[port].calcCrc;
+}
+
 void mstTmOut(uint8_t pitChnl) {
 	uint8_t port = pitChnl - L2_PIT_TIMER_START_IDX;
 	mst_token[port] = true;
@@ -102,7 +110,8 @@ void l2CmtRx(port) {
 		return;
 	}
 
-	bool crcValid = /*l2RxPktDesc[port].l2RxPkt.hdr.crc == 0xFF*/true;
+	bool crcValid = l2RxPktDesc[port].l2RxPkt.crc == l2RxPktDesc[port].calcCrc;
+	l2RxPktDesc[port].l2RxPkt.crc = l2RxPktDesc[port].calcCrc = 0; // reset the CRC
 	// validate CRC TODO
 	if (!crcValid) { // silently drop
 		return;

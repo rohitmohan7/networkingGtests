@@ -99,7 +99,7 @@ UART_Type* MultiHop::uart_ptrs[MAX_PORT];
 struct MockUart {
     MOCK_METHOD(void, l1UARTWriteNonBlocking, (UART_Type * UART, const uint8_t *data, size_t length, L2Crc_t *crc), ());
     MOCK_METHOD(bool, l1UARTCmpNonBlocking, (UART_Type* UART, const uint8_t* data, size_t length), ());
-    MOCK_METHOD(void, l1UARTReadNonBlocking, (UART_Type* UART, uint8_t* data, size_t length), ());
+    MOCK_METHOD(void, l1UARTReadNonBlocking, (UART_Type * UART, uint8_t *data, size_t length, L2Crc_t *crc), ());
     MOCK_METHOD(uint32_t, pitGetCurrMS, (), ());
 };
 
@@ -112,10 +112,10 @@ extern "C" void l1UARTWriteNonBlocking(UART_Type *UART, const uint8_t *data, siz
     g_mock->l1UARTWriteNonBlocking(UART, data, length, crc);
 }
 
-extern "C" void l1UARTReadNonBlocking(UART_Type* UART, uint8_t* data, size_t length)
+extern "C" void l1UARTReadNonBlocking(UART_Type *UART, uint8_t *data, size_t length, L2Crc_t *crc)
 {
     ASSERT_NE(g_mock, nullptr);
-    g_mock->l1UARTReadNonBlocking(UART, data, length);
+    g_mock->l1UARTReadNonBlocking(UART, data, length, crc);
 }
 
 extern "C" bool l1UARTCmpNonBlocking(UART_Type* UART, const uint8_t* data, size_t length)
@@ -212,17 +212,35 @@ static void expectMst(MockUart& mock, uint8_t addr, UART_Type* uart, uint8_t por
 }
 
 void sendMstToken(MockUart& mock, UART_Type* UART, const uint8_t& l2Addr, const uint8_t& port) {
-    std::array<uint8_t, sizeof(L2Hdr)> pkt{{l2Addr, L2_PKT_TYPE_MST}};
+    std::array<uint8_t, sizeof(L2Hdr) + sizeof(L2Crc_t)> pkt{{l2Addr, L2_PKT_TYPE_MST}};
+    L2Crc_t expectCrc = crcTestContinous(0x00, pkt.data(), pkt.size() - sizeof(L2Crc_t));
+    memcpy(pkt.data() + sizeof(L2Hdr), &expectCrc, sizeof(L2Crc_t));
 
     UART->S1 |= UART_S1_RDRF_MASK;
     UART->RCFIFO = pkt.size();
 
-    // call to copy header
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Hdr)))
+    // first it will read up to CRC len
+    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Crc_t), testing::IsNull()))
         .Times(1)
-        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
-        std::memcpy(data, pkt.data(), len);
-            }))
+        .WillOnce(testing::Invoke([pkt](UART_Type *UART, uint8_t *data, size_t len, L2Crc_t * crc)
+                                  { std::memcpy(data, pkt.data(), len); }))
+        .RetiresOnSaturation();
+
+    // next it will read data up to crc len into ptr
+    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), pkt.size() - (2 * sizeof(L2Crc_t)), testing::NotNull()))
+        .Times(1)
+        .WillOnce(testing::Invoke([pkt](UART_Type *UART, uint8_t *data, size_t len, L2Crc_t * crc)
+                                  { 
+                                    std::memcpy(data, pkt.data() + sizeof(L2Crc_t), len);
+                                    *crc = crcTestContinous(*crc, data, len);
+                                }))
+        .RetiresOnSaturation();
+
+    // finaly read crc ..
+    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Crc_t), testing::IsNull()))
+        .Times(1)
+        .WillOnce(testing::Invoke([pkt](UART_Type *UART, uint8_t *data, size_t len, L2Crc_t *crc)
+                                  { std::memcpy(data, pkt.data() + pkt.size() - sizeof(L2Crc_t), len); }))
         .RetiresOnSaturation();
 
     l1TransferHandleIRQ(UART, port);
@@ -235,39 +253,310 @@ void sendMstToken(MockUart& mock, UART_Type* UART, const uint8_t& l2Addr, const 
     PITCallback(port + L2_PIT_TIMER_START_IDX); // interframe silence
 }
 
-void sendMsgAck(MockUart& mock, UART_Type* UART, const PduHdr& pduHdr, const uint8_t& port) {
-    std::array<uint8_t, sizeof(PduHdr)> pkt{};
-
+void sendMsgAck(MockUart &mock, UART_Type *UART, const PduHdr &pduHdr, const uint8_t &port)
+{
+    std::array<uint8_t, sizeof(PduHdr) + sizeof(L2Crc_t)> pkt{};
     std::memcpy(pkt.data(), &pduHdr, sizeof(pduHdr));
+    L2Crc_t expectCrc = crcTestContinous(0x00, pkt.data(), pkt.size() - sizeof(L2Crc_t));
+    memcpy(pkt.data() + sizeof(pduHdr), &expectCrc, sizeof(L2Crc_t));
+
+    const size_t crcSize = sizeof(L2Crc_t);
+    const size_t totalSize = pkt.size();
+
+    size_t streamPos = 0; // bytes already supplied to the mock
+    size_t totalRx = 0;   // bytes l1Rx has consumed from UART so far
+    size_t remaining = totalSize;
+
+    auto expectRead = [&](size_t len, bool withCalcCrc)
+    {
+        if (withCalcCrc)
+        {
+            EXPECT_CALL(
+                mock,
+                l1UARTReadNonBlocking(
+                    UART,
+                    testing::NotNull(),
+                    len,
+                    testing::NotNull()))
+                .Times(1)
+                .WillOnce(testing::Invoke(
+                    [&, len](UART_Type *, uint8_t *data, size_t gotLen, L2Crc_t *crc)
+                    {
+                        ASSERT_EQ(gotLen, len);
+                        ASSERT_LE(streamPos + gotLen, totalSize);
+
+                        std::memcpy(data, pkt.data() + streamPos, gotLen);
+                        *crc = crcTestContinous(*crc, data, gotLen);
+
+                        streamPos += gotLen;
+                    }))
+                .RetiresOnSaturation();
+        }
+        else
+        {
+            EXPECT_CALL(
+                mock,
+                l1UARTReadNonBlocking(
+                    UART,
+                    testing::NotNull(),
+                    len,
+                    testing::IsNull()))
+                .Times(1)
+                .WillOnce(testing::Invoke(
+                    [&, len](UART_Type *, uint8_t *data, size_t gotLen, L2Crc_t *crc)
+                    {
+                        ASSERT_EQ(gotLen, len);
+                        ASSERT_LE(streamPos + gotLen, totalSize);
+
+                        std::memcpy(data, pkt.data() + streamPos, gotLen);
+                        ASSERT_EQ(crc, nullptr);
+
+                        streamPos += gotLen;
+                    }))
+                .RetiresOnSaturation();
+        }
+    };
+
+    auto contiguousAvail = [](size_t idx) -> size_t
+    {
+        if (idx < sizeof(L2Hdr))
+        {
+            return sizeof(L2Hdr) - idx;
+        }
+        if (idx < sizeof(PduHdr))
+        {
+            return sizeof(PduHdr) - idx;
+        }
+        return 0;
+    };
 
     UART->S1 |= UART_S1_RDRF_MASK;
-    UART->RCFIFO = pkt.size();
+    UART->RCFIFO = totalSize;
 
-    // call to copy header
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Hdr)))
-        .Times(1)
-        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
-        std::memcpy(data, pkt.data(), len);
-            }))
-        .RetiresOnSaturation();
+    {
+        while (remaining > 0)
+        {
+            const size_t crcFill = std::min(totalRx, crcSize);
 
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(PduHdr) - sizeof(L2Hdr)))
-        .Times(1)
-        .WillOnce(testing::Invoke([pkt](UART_Type* UART, uint8_t* data, size_t len) {
-        std::memcpy(data, pkt.data() + sizeof(L2Hdr), len);
-            }))
-        .RetiresOnSaturation();
+            // First fill the rolling CRC tail
+            if (crcFill < crcSize)
+            {
+                const size_t fill = std::min(crcSize - crcFill, remaining);
+                expectRead(fill, false);
+                totalRx += fill;
+                remaining -= fill;
+                continue;
+            }
+
+            // l2GetRxPkt() exposes L2Hdr first, then the rest of PduHdr
+            const size_t payloadIndex = totalRx - crcSize;
+            const size_t avail = contiguousAvail(payloadIndex);
+            ASSERT_GT(avail, 0u);
+
+            const size_t n = std::min(avail, remaining);
+
+            if (n < crcSize)
+            {
+                // Only refill the tail from UART; released bytes come from old crcBuf
+                expectRead(n, false);
+            }
+            else
+            {
+                const size_t direct = n - crcSize;
+
+                // Direct bytes read into payload contribute to calculated CRC
+                if (direct > 0)
+                {
+                    expectRead(direct, true);
+                }
+
+                // Final crcSize bytes of this step refill the rolling tail
+                expectRead(crcSize, false);
+            }
+
+            totalRx += n;
+            remaining -= n;
+        }
+    }
 
     l1TransferHandleIRQ(UART, port);
+
+    EXPECT_EQ(streamPos, totalSize);
 
     UART->S1 &= ~UART_S1_RDRF_MASK;
     UART->RCFIFO = 0;
 
     PITCallback(port + L2_PIT_TIMER_START_IDX); // interchar silence
-
     PITCallback(port + L2_PIT_TIMER_START_IDX); // interframe silence
 }
 
+void sendPduMsg(MockUart &mock,
+                UART_Type *UART,
+                uint8_t &rxPgOfst,
+                const uint8_t *msg,
+                const int &origSize,
+                const uint8_t &port)
+{
+    using ::testing::InSequence;
+
+    const size_t crcSize = sizeof(L2Crc_t);
+    size_t streamPos = 0;
+    size_t totalRx = 0;
+
+    auto contiguousAvail = [](size_t idx) -> size_t
+    {
+        if (idx < sizeof(L2Hdr))
+        {
+            return sizeof(L2Hdr) - idx;
+        }
+        if (idx < sizeof(PduHdr))
+        {
+            return sizeof(PduHdr) - idx;
+        }
+        return 0;
+    };
+
+    auto expectExactRead = [&](size_t len, bool withCalcCrc)
+    {
+        if (withCalcCrc)
+        {
+            EXPECT_CALL(mock,
+                        l1UARTReadNonBlocking(UART,
+                                              testing::NotNull(),
+                                              len,
+                                              testing::NotNull()))
+                .Times(1)
+                .WillOnce(testing::Invoke(
+                    [&, len](UART_Type *, uint8_t *data, size_t gotLen, L2Crc_t *crc)
+                    {
+                        ASSERT_EQ(gotLen, len);
+                        ASSERT_NE(crc, nullptr);
+                        ASSERT_LE(streamPos + gotLen, static_cast<size_t>(origSize));
+
+                        std::memcpy(data, msg + streamPos, gotLen);
+                        *crc = crcTestContinous(*crc, data, gotLen);
+                        streamPos += gotLen;
+                    }))
+                .RetiresOnSaturation();
+        }
+        else
+        {
+            EXPECT_CALL(mock,
+                        l1UARTReadNonBlocking(UART,
+                                              testing::NotNull(),
+                                              len,
+                                              testing::IsNull()))
+                .Times(1)
+                .WillOnce(testing::Invoke(
+                    [&, len](UART_Type *, uint8_t *data, size_t gotLen, L2Crc_t *crc)
+                    {
+                        ASSERT_EQ(gotLen, len);
+                        ASSERT_EQ(crc, nullptr);
+                        ASSERT_LE(streamPos + gotLen, static_cast<size_t>(origSize));
+
+                        std::memcpy(data, msg + streamPos, gotLen);
+                        streamPos += gotLen;
+                    }))
+                .RetiresOnSaturation();
+        }
+    };
+
+    auto expectHeaderChunkReads = [&](size_t chunkLen)
+    {
+        size_t rxLen = chunkLen;
+
+        while (rxLen > 0)
+        {
+            const size_t crcFill = std::min(totalRx, crcSize);
+
+            if (crcFill < crcSize)
+            {
+                const size_t fill = std::min(crcSize - crcFill, rxLen);
+                expectExactRead(fill, false);
+                totalRx += fill;
+                rxLen -= fill;
+                continue;
+            }
+
+            const size_t payloadIndex = totalRx - crcSize;
+            const size_t avail = contiguousAvail(payloadIndex);
+            ASSERT_GT(avail, 0u);
+
+            const size_t n = std::min(avail, rxLen);
+
+            if (n < crcSize)
+            {
+                expectExactRead(n, false);
+            }
+            else
+            {
+                const size_t direct = n - crcSize;
+                if (direct > 0)
+                {
+                    expectExactRead(direct, true);
+                }
+                expectExactRead(crcSize, false);
+            }
+
+            totalRx += n;
+            rxLen -= n;
+        }
+    };
+
+    UART->S1 |= UART_S1_RDRF_MASK;
+
+    {
+        InSequence seq;
+
+        int msgSize = origSize;
+
+        /* First IRQ: header area only */
+        UART->RCFIFO = sizeof(PduHdr);
+        expectHeaderChunkReads(sizeof(PduHdr));
+        l1TransferHandleIRQ(UART, port);
+        msgSize -= sizeof(PduHdr);
+    }
+
+    /* After PduHdr, let the mock stream bytes in whatever chunking
+    getL3RxPktFrag() causes. */
+    EXPECT_CALL(mock,
+                l1UARTReadNonBlocking(UART,
+                                      testing::NotNull(),
+                                      testing::_,
+                                      testing::_))
+        .WillRepeatedly(testing::Invoke(
+            [&](UART_Type *, uint8_t *data, size_t len, L2Crc_t *crc)
+            {
+                ASSERT_LE(streamPos + len, static_cast<size_t>(origSize));
+                std::memcpy(data, msg + streamPos, len);
+
+                if (crc != nullptr)
+                {
+                    *crc = crcTestContinous(*crc, data, len);
+                }
+
+                streamPos += len;
+            }));
+
+    int msgSize = origSize - sizeof(PduHdr);
+    while (msgSize > 0)
+    {
+        uint8_t size = std::min(static_cast<int>(UNIT - rxPgOfst), msgSize);
+        UART->RCFIFO = size;
+        l1TransferHandleIRQ(UART, port);
+        msgSize -= size;
+    }
+
+    EXPECT_EQ(streamPos, static_cast<size_t>(origSize));
+
+    UART->S1 &= ~UART_S1_RDRF_MASK;
+    UART->RCFIFO = 0;
+
+    PITCallback(port + L2_PIT_TIMER_START_IDX);
+    PITCallback(port + L2_PIT_TIMER_START_IDX);
+}
+
+#if 0
 void sendPduMsg(MockUart &mock, UART_Type *UART, uint8_t &rxPgOfst, const uint8_t *msg,
                 const int &origSize, const uint8_t &port)
 {
@@ -317,6 +606,8 @@ void sendPduMsg(MockUart &mock, UART_Type *UART, uint8_t &rxPgOfst, const uint8_
 
     PITCallback(port + L2_PIT_TIMER_START_IDX); // interframe silence
 }
+#endif
+
 
 #define L2_FRAME_SIZE (RS485_FRAME_SIZE - sizeof(L2Hdr))
 #define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
@@ -977,6 +1268,7 @@ TEST_P(MultiHop, mstPassFail) {
 TEST_P(MultiHop, mstPassMsg) {
     MockUart mock;
     g_mock = &mock;
+    testing::InSequence seq;
 
     for (int port = 0; port < MAX_PORT; port++) {
         // confirm tx is disabled
@@ -1332,7 +1624,7 @@ TEST_P(MultiHop, pduNoHopAck)
 
     ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
 }
-//endif
+//#endif
 
 //#if 0
 TEST_P(MultiHop, pduNoHopRx)
@@ -1391,6 +1683,15 @@ TEST_P(MultiHop, pduNoHopRx)
             .l4hdr = {0, 0, 0}};
 
         memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
+        
+        // give crc
+        L2Crc_t expectCrc = crcTestContinous(0x00,
+                                             msg.data(),
+                                             msg.size() - sizeof(L2Crc_t));
+
+        std::memcpy(msg.data() + msg.size() - sizeof(L2Crc_t),
+                    &expectCrc,
+                    sizeof(L2Crc_t));
 
         // send msg
         sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
@@ -1456,6 +1757,15 @@ TEST_P(MultiHop, pduNoHopRxAck)
 
         memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
 
+        // give crc
+        L2Crc_t expectCrc = crcTestContinous(0x00,
+                                             msg.data(),
+                                             msg.size() - sizeof(L2Crc_t));
+
+        std::memcpy(msg.data() + msg.size() - sizeof(L2Crc_t),
+                    &expectCrc,
+                    sizeof(L2Crc_t));
+
         // send msg
         sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
                    msg.size(), port);
@@ -1479,7 +1789,7 @@ TEST_P(MultiHop, pduHopFrwd)
     testing::InSequence seq;
     // construct message
     static const int MSG_SIZE = 100;
-    std::array<uint8_t, MSG_SIZE> msg;
+    std::array<uint8_t, MSG_SIZE + sizeof(L2Crc_t)> msg;
     for (int i = 0; i < MSG_SIZE; i++)
     {
         msg[i] = i;
@@ -1579,6 +1889,15 @@ TEST_P(MultiHop, pduHopFrwd)
 
             memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
 
+            // give crc
+            L2Crc_t expectCrc = crcTestContinous(0x00,
+                                                 msg.data(),
+                                                 msg.size() - sizeof(L2Crc_t));
+
+            std::memcpy(msg.data() + msg.size() - sizeof(L2Crc_t),
+                        &expectCrc,
+                        sizeof(L2Crc_t));
+
             // send msg to port 1
             sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
                        msg.size(), port);
@@ -1603,7 +1922,7 @@ TEST_P(MultiHop, pduHopFrwd)
                             size,
                             TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
                             (msg.data() + (sizeof(PduHdr))),
-                            (msg.size() - (sizeof(PduHdr))), /* L4 hdr is part of page buffer */
+                            (MSG_SIZE - (sizeof(PduHdr))), /* L4 hdr is part of page buffer */
                             pduHdr);
 
             // check for a gateway in port2 ...
@@ -1625,6 +1944,15 @@ TEST_P(MultiHop, pduHopFrwd)
                         .l4hdr = {0, 0, 0}};
 
                     memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
+
+                    // give crc
+                    L2Crc_t expectCrc = crcTestContinous(0x00,
+                                                         msg.data(),
+                                                         msg.size() - sizeof(L2Crc_t));
+
+                    std::memcpy(msg.data() + msg.size() - sizeof(L2Crc_t),
+                                &expectCrc,
+                                sizeof(L2Crc_t));
 
                     // send msg to port 1
                     sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
@@ -1650,7 +1978,7 @@ TEST_P(MultiHop, pduHopFrwd)
                                     size,
                                     TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
                                     (msg.data() + (sizeof(PduHdr))),
-                                    (msg.size() - (sizeof(PduHdr))), /* L4 hdr is part of page buffer */
+                                    (MSG_SIZE - (sizeof(PduHdr))), /* L4 hdr is part of page buffer */
                                     pduHdr);
                 }
             }
@@ -1668,7 +1996,7 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
     testing::InSequence seq;
     // construct message
     static const int MSG_SIZE = 100;
-    std::array<uint8_t, MSG_SIZE> msg;
+    std::array<uint8_t, MSG_SIZE + sizeof(L2Crc_t)> msg;
     for (int i = 0; i < MSG_SIZE; i++)
     {
         msg[i] = i;
@@ -1761,6 +2089,15 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
 
             memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
 
+            // give crc
+            L2Crc_t expectCrc = crcTestContinous(0x00,
+                                                 msg.data(),
+                                                 msg.size() - sizeof(L2Crc_t));
+
+            std::memcpy(msg.data() + msg.size() - sizeof(L2Crc_t),
+                        &expectCrc,
+                        sizeof(L2Crc_t));
+
             // send msg to port 1
             sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
                        msg.size(), port);
@@ -1785,7 +2122,7 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
                             size,
                             TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
                             (msg.data() + (sizeof(PduHdr))),
-                            (msg.size() - (sizeof(PduHdr))), /* L4 hdr is part of page buffer */
+                            (MSG_SIZE - (sizeof(PduHdr))), /* L4 hdr is part of page buffer */
                             pduHdr);
         }
     }

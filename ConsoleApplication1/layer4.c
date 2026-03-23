@@ -366,7 +366,7 @@ void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio) { // recieved a frame
 			l4SndAck(s);
 		}
 	}
-
+	
 	s->rxMsgHdr.rxDesc.hd = INVALID_PAGE;
 }
 
@@ -388,7 +388,7 @@ bool l4CmtRxPnding(L4Pkt* l4Pkt) {
 	/* Only checked once post rx */
 	L4Hdr* l4Hdr = &l4Pkt->hdr;
 	uint8_t msgFlgs = l4Hdr->msgFlgs;
-	l4Hdr->msgFlgs &= ~L4_MSG_FLAG_RXHD_CMT; /* free incase needed to brdcast */
+	//l4Hdr->msgFlgs &= ~L4_MSG_FLAG_RXHD_CMT; /* free incase needed to brdcast */
 	return !(msgFlgs & L4_MSG_FLAG_RXHD_CMT);
 }
 

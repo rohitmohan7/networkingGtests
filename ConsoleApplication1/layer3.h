@@ -57,4 +57,8 @@ uint8_t getL3RxPktFrag(uint8_t port, L3Pkt *l3Pkt, uint8_t **ptr, uint8_t rxLen)
 
 bool l3TxBrdcstMsg(const uint8_t* data, MsgLenType len, uint8_t priority);
 
+uint8_t l3GetRxPktHdrSize(L3Pkt *l3Pkt, uint8_t port);
+
+uint8_t l3GetTxPktHdrSize(L3Pkt *l3Pkt, uint8_t port);
+
 #endif

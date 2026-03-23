@@ -205,13 +205,15 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 	case L2_PKT_TYPE_PDU:
 
 		L3Pkt *l3Pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu;
-		if (idx < sizeof(PduHdr))
+		const uint8_t pduHdrSize = sizeof(L2Hdr) + l3GetTxPktHdrSize(l3Pkt, port);
+
+		if (idx < pduHdrSize)
 		{
 			if (!ptr) { // if ptr was not already set
 				*ptr = ((uint8_t *)&l2TxPktDesc[port].l2TxPkt.hdr) + idx;
 			}
 
-			*len = sizeof(PduHdr) - idx; // reset length
+			*len = pduHdrSize - idx; // reset length
 
 			return getL3PktHd(l3Pkt, &tx_pdu_head[xfer][port], &tx_pdu_hd_off[xfer][port], port);
 		} else if (tx_pdu_head[xfer][port] == INVALID_PAGE || (idx) >= RS485_FRAME_SIZE) {
@@ -228,7 +230,7 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 			}
 
 			*len = getL3PktFrag(&l2TxPktDesc[port].l2TxPkt.msg.pdu,
-								ptr, (idx - sizeof(PduHdr)),
+								ptr, (idx - pduHdrSize),
 								&tx_pdu_head[xfer][port],
 								&tx_pdu_hd_off[xfer][port],
 								txRxFifoLen,
@@ -289,19 +291,29 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 	switch (type) {
 	case L2_PKT_TYPE_PDU:
 
-		if (idx < sizeof(PduHdr))
+		if (idx < (sizeof(L2Hdr) + sizeof(L3Hdr))) // get L3 Hdr to determine if its a forward pkt
 		{
 			*ptr = ((uint8_t *)&l2RxPktDesc[port].l2RxPkt.hdr) + idx;
-			len = sizeof(PduHdr) - idx;
+			len = sizeof(L3Hdr) - (idx - sizeof(L2Hdr));
 		}
 		else
 		{ // todo
-			if (idx == sizeof(PduHdr))
-			{ // we just got hdr identify and prime rx
+
+			if (idx == sizeof(L2Hdr) + sizeof(L3Hdr))
+			{
 				if (!l3CmtRxHd(&l2RxPktDesc[port].l2RxPkt.msg.pdu, port))
 				{
 					return 0;
 				}
+			}
+
+			const uint8_t pduHdrSize = sizeof(L2Hdr) + l3GetRxPktHdrSize(&l2RxPktDesc[port].l2RxPkt.msg.pdu, port);
+
+			if (idx < pduHdrSize)
+			{
+				*ptr = ((uint8_t *)&l2RxPktDesc[port].l2RxPkt.hdr) + idx;
+				len = pduHdrSize - idx;
+				return len;
 			}
 
 			len = getL3RxPktFrag(port, &l2RxPktDesc[port].l2RxPkt.msg.pdu, ptr, rxLen);

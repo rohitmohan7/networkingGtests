@@ -323,6 +323,11 @@ void sendMsgAck(MockUart &mock, UART_Type *UART, const PduHdr &pduHdr, const uin
         {
             return sizeof(L2Hdr) - idx;
         }
+
+        if (idx < sizeof(L2Hdr) + sizeof(L3Hdr)) {
+            return (sizeof(L2Hdr) + sizeof(L3Hdr)) - idx;
+        }
+        
         if (idx < sizeof(PduHdr))
         {
             return sizeof(PduHdr) - idx;
@@ -395,7 +400,8 @@ void sendPduMsg(MockUart &mock,
                 uint8_t &rxPgOfst,
                 const uint8_t *msg,
                 const int &origSize,
-                const uint8_t &port)
+                const uint8_t &port,
+                const bool& forward = false)
 {
     using ::testing::InSequence;
 
@@ -403,13 +409,17 @@ void sendPduMsg(MockUart &mock,
     size_t streamPos = 0;
     size_t totalRx = 0;
 
-    auto contiguousAvail = [](size_t idx) -> size_t
+    auto contiguousAvail = [forward](size_t idx) -> size_t
     {
         if (idx < sizeof(L2Hdr))
         {
             return sizeof(L2Hdr) - idx;
         }
-        if (idx < sizeof(PduHdr))
+        if (idx < sizeof(L2Hdr) + sizeof(L3Hdr))
+        {
+            return (sizeof(L2Hdr) + sizeof(L3Hdr)) - idx;
+        }
+        if (!forward && idx < sizeof(PduHdr))
         {
             return sizeof(PduHdr) - idx;
         }
@@ -505,16 +515,18 @@ void sendPduMsg(MockUart &mock,
 
     UART->S1 |= UART_S1_RDRF_MASK;
 
+    uint8_t hdrSize = forward ? sizeof(L2Hdr) + sizeof(L3Hdr) : sizeof(PduHdr);
+
     {
         InSequence seq;
 
         int msgSize = origSize;
 
         /* First IRQ: header area only */
-        UART->RCFIFO = sizeof(PduHdr);
-        expectHeaderChunkReads(sizeof(PduHdr));
+        UART->RCFIFO = hdrSize;
+        expectHeaderChunkReads(hdrSize);
         l1TransferHandleIRQ(UART, port);
-        msgSize -= sizeof(PduHdr);
+        msgSize -= hdrSize;
     }
 
     /* After PduHdr, let the mock stream bytes in whatever chunking
@@ -538,7 +550,7 @@ void sendPduMsg(MockUart &mock,
                 streamPos += len;
             }));
 
-    int msgSize = origSize - sizeof(PduHdr);
+    int msgSize = origSize - hdrSize;
     while (msgSize > 0)
     {
         uint8_t size = std::min(static_cast<int>(UNIT - rxPgOfst), msgSize);
@@ -555,59 +567,6 @@ void sendPduMsg(MockUart &mock,
     PITCallback(port + L2_PIT_TIMER_START_IDX);
     PITCallback(port + L2_PIT_TIMER_START_IDX);
 }
-
-#if 0
-void sendPduMsg(MockUart &mock, UART_Type *UART, uint8_t &rxPgOfst, const uint8_t *msg,
-                const int &origSize, const uint8_t &port)
-{
-    UART->S1 |= UART_S1_RDRF_MASK;
-    int msgSize = origSize;
-    UART->RCFIFO = sizeof(PduHdr);
-
-    // call to copy header
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(L2Hdr)))
-        .Times(1)
-        .WillOnce(testing::Invoke([msg](UART_Type *UART, uint8_t *data, size_t len)
-                                  { std::memcpy(data, msg, len); }))
-        .RetiresOnSaturation();
-
-    EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), sizeof(PduHdr) - sizeof(L2Hdr)))
-        .Times(1)
-        .WillOnce(testing::Invoke([msg](UART_Type *UART, uint8_t *data, size_t len)
-                                  { std::memcpy(data, msg + sizeof(L2Hdr), len); }))
-        .RetiresOnSaturation();
-
-    l1TransferHandleIRQ(UART, port);
-    msgSize -= sizeof(PduHdr);
-
-    while (msgSize)
-    {
-        uint8_t size = std::min(static_cast<int>(UNIT - rxPgOfst), msgSize);
-
-        const uint8_t *msgAftHdr = msg + sizeof(PduHdr);
-
-        EXPECT_CALL(mock, l1UARTReadNonBlocking(UART, testing::NotNull(), size))
-            .Times(1)
-            .WillOnce(testing::Invoke([msg, origSize, msgSize](const UART_Type *const UART, uint8_t *data, size_t len)
-                                      { 
-                            const uint8_t * msgAftHdr2 = msg + (origSize - msgSize);
-                            std::memcpy(data, msg + (origSize - msgSize), len); }))
-            .RetiresOnSaturation();
-
-        UART->RCFIFO = size; // keep rx fifo full for now
-        l1TransferHandleIRQ(UART, port);
-        msgSize -= size;
-    }
-
-    UART->S1 &= ~UART_S1_RDRF_MASK;
-    UART->RCFIFO = 0;
-
-    PITCallback(port + L2_PIT_TIMER_START_IDX); // interchar silence
-
-    PITCallback(port + L2_PIT_TIMER_START_IDX); // interframe silence
-}
-#endif
-
 
 #define L2_FRAME_SIZE (RS485_FRAME_SIZE - sizeof(L2Hdr))
 #define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
@@ -1900,7 +1859,7 @@ TEST_P(MultiHop, pduHopFrwd)
 
             // send msg to port 1
             sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
-                       msg.size(), port);
+                       msg.size(), port, true);
 
             // send MST to port 2
             sendMstToken(mock, uart_ptrs[port2], l2Addr2, port2);
@@ -1921,8 +1880,8 @@ TEST_P(MultiHop, pduHopFrwd)
                             idx[port2],
                             size,
                             TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-                            (msg.data() + (sizeof(PduHdr))),
-                            (MSG_SIZE - (sizeof(PduHdr))), /* L4 hdr is part of page buffer */
+                            (msg.data() + (sizeof(L2Hdr) + sizeof(L3Hdr))),
+                            (MSG_SIZE - (sizeof(L2Hdr) + sizeof(L3Hdr))), /* L4 hdr is part of page buffer */
                             pduHdr);
 
             // check for a gateway in port2 ...
@@ -1956,7 +1915,7 @@ TEST_P(MultiHop, pduHopFrwd)
 
                     // send msg to port 1
                     sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
-                               msg.size(), port);
+                               msg.size(), port, true);
 
                     // send MST to port 2
                     sendMstToken(mock, uart_ptrs[port2], l2Addr2, port2);
@@ -1977,8 +1936,8 @@ TEST_P(MultiHop, pduHopFrwd)
                                     idx[port2],
                                     size,
                                     TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-                                    (msg.data() + (sizeof(PduHdr))),
-                                    (MSG_SIZE - (sizeof(PduHdr))), /* L4 hdr is part of page buffer */
+                                    (msg.data() + (sizeof(L2Hdr) + sizeof(L3Hdr))),
+                                    (MSG_SIZE - (sizeof(L2Hdr) + sizeof(L3Hdr))), /* L4 hdr is part of page buffer */
                                     pduHdr);
                 }
             }

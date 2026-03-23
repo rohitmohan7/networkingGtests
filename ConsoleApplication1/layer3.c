@@ -90,6 +90,7 @@ static inline void l3FrwdQInit(void)
 			for (uint8_t queueIdx = 0; queueIdx < MAX_FORWARD_QUEUE; queueIdx++)
 			{
 				pgPtrInit(&l3FrwdPgPtrQ[port][prio][queueIdx]);
+				memset(l3FrwdQ[MAX_PORT][MAX_PRIORITY][MAX_FORWARD_QUEUE].frwdPkt.data, 0, sizeof(L4Pkt));
 			}
 		}
 	}
@@ -231,6 +232,34 @@ static inline void l3BrdCst(const uint8_t port, L3Pkt *const l3Pkt)
 }
 
 #endif
+
+uint8_t l3GetTxPktHdrSize(L3Pkt *l3Pkt, uint8_t port)
+{
+	L3Hdr *l3Hdr = &l3Pkt->hdr;
+//#if 0
+#if MAX_PORT > 1
+	if (l3TxfrwdPkt(l3Hdr, port))
+	{
+		return sizeof(L3Hdr);
+	}
+#endif
+//#endif
+	return sizeof(L3Hdr) + sizeof(L4Hdr);
+}
+
+uint8_t l3GetRxPktHdrSize(L3Pkt *l3Pkt, uint8_t port)
+{
+	L3Hdr *l3Hdr = &l3Pkt->hdr;
+//#if 0
+#if MAX_PORT > 1
+	if (l3RxfrwdPkt(l3Hdr, port))
+	{
+		return sizeof(L3Hdr); // forward packet
+	}
+#endif
+//#endif
+	return sizeof(L3Hdr) + sizeof(L4Hdr);
+}
 
 bool l3TxBrdcstMsg(const uint8_t* data, MsgLenType len, uint8_t priority) {
 	/* Critical Section: Function should be gated against interrupt from RS485 UART or PIT to avoid data sync issues */
@@ -565,20 +594,6 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 		if (l4TxBrdcastStrmEmpty(&brdcstStream->txPgPtr)) {
 			brdcstStream = NULL;
 		}
-#if 0
-		if (!l4TxBrdcastStrmEmpty(&brdcstStream->txPgPtr)) {
-
-			L3Hdr* l3Hdr = &l3Pkt->hdr;
-			l3Hdr->src = l3AddrTblPrio[myPos][port];
-			l3Hdr->ttl = 1;
-			l3Hdr->prio = prio;
-			l3Hdr->dst = 0;
-			setL4HdrBrdcst(&l3Pkt->l4Pkt, &l3Pkt->l4Pkt.hdr);
-			//TODO
-			*l2Addr = 0;
-			return true;
-		}
-#endif
 
 		bool txOrderPrempt = false;
 		uint16_t dstPos = MAX_POS;
@@ -695,6 +710,12 @@ uint8_t getL3RxPktFrag(uint8_t port, L3Pkt *l3Pkt, uint8_t **ptr, uint8_t rxLen)
 	}
 #endif
 
+	if (l4CmtRxPnding(&l3Pkt->l4Pkt)) { // hdr only message will no have identified stream yet ..
+		if (!l3CmtL4RxHd(l3Pkt)) {
+			return; // abort processing
+		}
+	}
+
 	return getL4RxPktFrag(&l3Pkt->l4Pkt, ptr, rxLen, l3Hdr->prio);
 }
 
@@ -741,7 +762,7 @@ bool l3CmtRxHd(L3Pkt *l3Pkt, const uint8_t port) { // called from L2
 	}
 #endif
 
-	return l3CmtL4RxHd(l3Pkt);
+	return true/*l3CmtL4RxHd(l3Pkt)*/;
 }
 
 bool l3RxCmplt(uint8_t rxIdx) {

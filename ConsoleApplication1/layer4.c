@@ -43,7 +43,9 @@ bool getL4PktHd(L4Pkt* l4Pkt, uint8_t prio, uint8_t* hd, uint8_t* offset) {
 
 	if (s->txMsgHdr.msgFlgs & L4_MSG_FLAG_TYPE_ACK) // this is an ack message only has hdr
 	{
-		return true;
+		*hd = INVALID_PAGE;
+	//	*offset = 0;
+		return false;
 	}
 
 	uint8_t currHd = s->txPgPtr.hdPg;
@@ -137,8 +139,12 @@ static inline void freeRxStream(stream_t *s)
 	//s->rxMsgHdr.rxDesc.hd = INVALID_PAGE;
 }
 
-void l4SetBrdcastStrmPnding(L4Hdr * hdr) {
-	hdr->msgFlgs |= L4_MSG_FLAG_STREAM_PENDING;
+void l4SetBrdcastStrmPnding(L4Hdr * hdr, const bool pending) {
+	if (pending) {
+		hdr->msgFlgs |= L4_MSG_FLAG_STREAM_PENDING;
+	} else {
+		hdr->msgFlgs &= ~L4_MSG_FLAG_STREAM_PENDING;
+	}
 }
 
 static inline bool clearMsgFrame(L4Pkt *l4Pkt, stream_t *s, uint8_t pos, bool allFrames)

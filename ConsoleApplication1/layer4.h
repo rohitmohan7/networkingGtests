@@ -95,7 +95,7 @@ void setL4HdrBrdcst(L4Hdr* l4PktHdr, L4Hdr* txHdr);
 
 bool l4lstBrdcstMsgFrm(L4Hdr* l4Pkt);
 
-void l4SetBrdcastStrmPnding(L4Hdr* hdr);
+void l4SetBrdcastStrmPnding(L4Hdr* hdr, const bool pending);
 
 bool l4TxBrdcstStrmPnding(L4Hdr* l4Pkt);
 

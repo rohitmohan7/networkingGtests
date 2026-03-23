@@ -35,16 +35,14 @@ static inline L2TxPktDesc* L2_GetPktDesc(uint8_t port)
 #define INTER_CHAR_SILENCE 750 // 1.5 char times for baud less than 19200, else fixed 750 µs
 #define INTER_FRAME_SILENCE_JITTER 200 // give some time for slave jitter
 
-#define RS485_FRAME_SIZE 256
-
-typedef uint8_t l2Crc;
+typedef uint8_t L2Crc_t;
+#define RS485_FRAME_SIZE (256 - sizeof(L2Crc_t))
 
 typedef struct __attribute__((packed)) {
 	uint8_t addr;
 	uint8_t type;
-	l2Crc crc;
 } L2Hdr;
-//_Static_assert(sizeof(L2Hdr) == 2, "L2Hdr wrong size");
+_Static_assert(sizeof(L2Hdr) == 2, "L2Hdr wrong size");
 #define L2_FRAME_SIZE (RS485_FRAME_SIZE - sizeof(L2Hdr))
 
 typedef struct {
@@ -59,10 +57,9 @@ typedef struct __attribute__((packed)) L2Pkt {
 	// payload ptr
 	union {
 		L3Pkt pdu;
-		struct {
-			uint8_t reason;
-		} nak;
 	} msg;
+
+	L2Crc_t crc;
 } L2Pkt; // size 7 bytes
 //_Static_assert(sizeof(L2Pkt) == 7, "L2Pkt wrong size");
 
@@ -99,5 +96,7 @@ bool l2RxAborted(uint8_t port);
 //uint8_t l2AbortRx(uint8_t port);
 
 void l2AbortXfer(uint8_t port);
+
+L2Crc_t * l2GetTxCrc(const uint8_t port);
 #endif // ! L2_NETWORK
 

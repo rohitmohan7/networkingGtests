@@ -184,8 +184,23 @@ void l1TxCmplt(uint8_t port) {
 	l2TxCmplt(port);
 }
 
+static inline uint8_t crc8Smbus(const uint8_t byte,
+								L2Crc_t crc)
+{
+	const uint8_t poly = 0x07;
+
+	crc ^= byte;
+
+	for (uint8_t bit = 0; bit < 8; bit++)
+	{
+		crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ poly)
+						   : (uint8_t)(crc << 1);
+	}
+	return crc;
+}
+
 #ifndef UNIT_TEST //pheripheral functions
-static void l1UARTWriteNonBlocking(UART_Type* UARTptr, const uint8_t* data, size_t length)
+static void l1UARTWriteNonBlocking(UART_Type *UARTptr, const uint8_t *data, size_t length, l2Crc * crcPtr)
 {
 	assert(data != NULL);
 
@@ -195,6 +210,9 @@ static void l1UARTWriteNonBlocking(UART_Type* UARTptr, const uint8_t* data, size
 	peripheral to write. */
 	for (i = 0; i < length; i++)
 	{
+		if (crcPtr) {
+			*crcPtr = crc8Smbus(data[i], *crcPtr);
+		}
 		UARTptr->D = data[i];
 	}
 }
@@ -262,7 +280,7 @@ void l1Tx(UART_Type* UARTptr, uint8_t port) {
 		txCmplt = l2GetTxPkt(port, &ptr, &len, txIndex[port], txLen, L2_XFER_TX); // return remaining len
 		txLen -= len;
 		txIndex[port] += len;
-		l1UARTWriteNonBlocking(UARTptr, ptr, len);
+		l1UARTWriteNonBlocking(UARTptr, ptr, len, (txCmplt? NULL: l2GetTxCrc(port)));
 	} while (txLen > 0 && !txCmplt);
 	/* Enable transmitter interrupt. */
 	if (txCmplt) {

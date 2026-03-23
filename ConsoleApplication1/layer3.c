@@ -31,6 +31,39 @@ static inline bool l3Multicst(const L3Hdr *const l3Hdr, const uint8_t port)
 
 l3BrdCstStrm_t l3BrdcstStrms[MAX_PORT][MAX_PRIORITY];
 
+static inline uint8_t getL3PktFragInternal(PgPtr_t* frwdPgPtr, uint8_t** ptr, uint8_t len, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen) {
+	const uint16_t base = pageOff(*txHd) + (uint16_t)(*txHdOfst);
+
+	*ptr = &g_pool[base];
+
+	if (len <= txLen)
+	{ // we are at the end of current page
+		*txHd = g_next[(*txHd)];
+		*txHdOfst = 0;
+	}
+	else
+	{
+		len = min(txLen, len);
+		*txHdOfst += len;
+	}
+
+	if ((*txHd == frwdPgPtr->tlPg &&
+		frwdPgPtr->tlUsd == *txHdOfst)) {
+		*txHd = INVALID_PAGE;
+	}
+
+	return len;
+}
+
+static inline uint8_t getL3BrdCstPktFrag(l3BrdCstStrm_t* brdcstStrm, uint8_t** ptr, uint8_t idx, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen) {
+	uint8_t len = min((UNIT - (*txHdOfst)), (brdcstStrm->txMsgHdr.msgLen - idx));
+	uint8_t ret = getL3PktFragInternal(&brdcstStrm->txPgPtr, ptr, len, txHd, txHdOfst, txLen);
+	if (len + idx >= brdcstStrm->txMsgHdr.msgLen) {
+		*txHd = INVALID_PAGE;
+	}
+	return ret;
+}
+
 #if MAX_PORT > 1 /* Forwarding */
 #define MAX_FORWARD_QUEUE 4 // power of 2
 #define MAX_FORWARD_QUEUE_MASK (MAX_FORWARD_QUEUE - 1u)
@@ -114,39 +147,6 @@ static inline bool passMstFrwd(const uint8_t port, const uint8_t prioIdx)
 	}
 
 	return passMst(port, prioIdx, 0); // check from pos 0 of this prio if there is a pending high prio stream or frwd pkt
-}
-
-static inline uint8_t getL3PktFragInternal(PgPtr_t* frwdPgPtr, uint8_t** ptr, uint8_t len, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen) {
-	const uint16_t base = pageOff(*txHd) + (uint16_t)(*txHdOfst);
-
-	*ptr = &g_pool[base];
-
-	if (len <= txLen)
-	{ // we are at the end of current page
-		*txHd = g_next[(*txHd)];
-		*txHdOfst = 0;
-	}
-	else
-	{
-		len = min(txLen, len);
-		*txHdOfst += len;
-	}
-
-	if ((*txHd == frwdPgPtr->tlPg &&
-		frwdPgPtr->tlUsd == *txHdOfst)) {
-		*txHd = INVALID_PAGE;
-	}
-
-	return len;
-}
-
-static inline uint8_t getL3BrdCstPktFrag(l3BrdCstStrm_t* brdcstStrm, uint8_t** ptr, uint8_t idx, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen) {
-	uint8_t len = min((UNIT - (*txHdOfst)), (brdcstStrm->txMsgHdr.msgLen - idx));
-	uint8_t ret = getL3PktFragInternal(&brdcstStrm->txPgPtr, ptr, len, txHd, txHdOfst, txLen);
-	if (len + idx >= brdcstStrm->txMsgHdr.msgLen) {
-		*txHd = INVALID_PAGE;
-	}
-	return ret;
 }
 
 static inline uint8_t getL3FrwdPktFrag(PgPtr_t *frwdPgPtr, uint8_t **ptr, uint8_t idx, uint8_t *txHd, uint8_t *txHdOfst, uint8_t txLen)
@@ -327,6 +327,8 @@ static inline void l3TxCmpltBrdcstPkt(const L3Pkt* const l3Pkt, const uint8_t po
 	uint8_t len = (txHdr->msgLen > L4_FRAME_SIZE) ? L4_FRAME_SIZE : txHdr->msgLen;
 	const PgPtr_t* const pgPtr = &brdcstStream->txPgPtr;
 	freePgPtrLen(pgPtr, len);
+	
+	bool brdcstStreamPending = false;
 
 	if (pgPtr->hdPg != INVALID_PAGE) {
 		if (l4lstBrdcstMsgFrm(txHdr)) {
@@ -339,9 +341,11 @@ static inline void l3TxCmpltBrdcstPkt(const L3Pkt* const l3Pkt, const uint8_t po
 		} else {
 			//txHdr->msgLen = l3Pkt->l4Pkt.hdr.msgLen;
 			txHdr->msgLen -= len;
-			l4SetBrdcastStrmPnding(txHdr);
+			brdcstStreamPending = true;
 		}
 	}
+
+	l4SetBrdcastStrmPnding(txHdr, brdcstStreamPending);
 }
 
 void l3TxCmplt(L3Pkt* l3Pkt, const uint8_t port) {

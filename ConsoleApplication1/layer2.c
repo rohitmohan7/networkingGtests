@@ -35,7 +35,7 @@ uint8_t getNxtMst(uint8_t port, uint8_t addr) {
 static inline void l2SendMst(uint8_t port, uint8_t addr) {
 	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr;  // Best way to find next table in line ? 
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_MST;
-	l2TxPktDesc[port].l2TxPkt.hdr.crc = 0xFF; //TODO
+	l2TxPktDesc[port].l2TxPkt.crc = 0;
 	l1StartTx(port);
 }
 
@@ -43,7 +43,7 @@ static inline void l2SendPdu(uint8_t port, bool mstPass, uint8_t addr)
 {
 	l2TxPktDesc[port].l2TxPkt.hdr.addr = addr; // Best way to find next table in line ?
 	l2TxPktDesc[port].l2TxPkt.hdr.type = L2_PKT_TYPE_PDU | (mstPass ? L2_PKT_TYPE_MST : 0);
-	l2TxPktDesc[port].l2TxPkt.hdr.crc = 0xFF; // TODO
+	l2TxPktDesc[port].l2TxPkt.crc = 0;
 	l1StartTx(port);
 }
 
@@ -57,6 +57,10 @@ void l2SendMsg(uint8_t port) {
 		const uint8_t txAddr = l2TxPktDesc[port].l2TxPkt.hdr.addr > 0 ? l2TxPktDesc[port].l2TxPkt.hdr.addr : l3AddrTblPrio[myPos][port];
 		l2SendMst(port, getNxtMst(port, txAddr));
 	}
+}
+
+L2Crc_t * l2GetTxCrc(const uint8_t port) {
+	return &l2TxPktDesc[port].l2TxPkt.crc;
 }
 
 void mstTmOut(uint8_t pitChnl) {
@@ -98,7 +102,7 @@ void l2CmtRx(port) {
 		return;
 	}
 
-	bool crcValid = l2RxPktDesc[port].l2RxPkt.hdr.crc == 0xFF;
+	bool crcValid = /*l2RxPktDesc[port].l2RxPkt.hdr.crc == 0xFF*/true;
 	// validate CRC TODO
 	if (!crcValid) { // silently drop
 		return;
@@ -182,8 +186,15 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 	switch (type) {
 	case L2_PKT_TYPE_MST:
 		// pkt has only hdr
-		return true;
+		if (idx >= sizeof(L2Hdr)) {
+			/* CRC */
+			*ptr = ((uint8_t *)&l2TxPktDesc[port].l2TxPkt.crc);
+			*len = sizeof(L2Crc_t);
+			return true;
+		}
+		return false;
 	case L2_PKT_TYPE_PDU:
+
 		L3Pkt *l3Pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu;
 		if (idx < sizeof(PduHdr))
 		{
@@ -194,9 +205,18 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 			*len = sizeof(PduHdr) - idx; // reset length
 
 			return getL3PktHd(l3Pkt, &tx_pdu_head[xfer][port], &tx_pdu_hd_off[xfer][port], port);
+		} else if (tx_pdu_head[xfer][port] == INVALID_PAGE || (idx) >= RS485_FRAME_SIZE) {
+				/* CRC */
+				*ptr = ((uint8_t *)&l2TxPktDesc[port].l2TxPkt.crc);
+				*len = sizeof(L2Crc_t);
+				return true;
 		}
 		else
 		{
+			/* cap txlen */
+			if (idx + txRxFifoLen >= RS485_FRAME_SIZE) {
+				txRxFifoLen = RS485_FRAME_SIZE - idx;
+			}
 
 			*len = getL3PktFrag(&l2TxPktDesc[port].l2TxPkt.msg.pdu,
 								ptr, (idx - sizeof(PduHdr)),
@@ -204,11 +224,6 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 								&tx_pdu_hd_off[xfer][port],
 								txRxFifoLen,
 								port);
-
-			if (tx_pdu_head[xfer][port] == INVALID_PAGE || (idx + *len) >= RS485_FRAME_SIZE)
-			{
-				return true;
-			}
 		}
 	}
 

@@ -63,14 +63,6 @@ protected:
         config.topology[7] = NodeCfg_t{{1, 0}};
         g_pmm.config = &config;
         
-#if 0
-        ::topology[1] = NodeCfg_t{ {1,3} };
-        ::topology[2] = NodeCfg_t{ {2,3} };
-        ::topology[3] = NodeCfg_t{ {1,2} };
-        ::topology[5] = NodeCfg_t{ {2,0} };
-        ::topology[7] = NodeCfg_t{ {1,0} };
-#endif
-        
         for (int i = 0; i < MAX_PORT; ++i) {
             uart_ptrs[i] = &uart_objs[i];
         }
@@ -412,7 +404,7 @@ void expectTxMultiFrame(MockUart& mock,
     const uint8_t* msg,
     const int& msgSize,
     const PduHdr& hdr = PduHdr(),
-    const bool& mstAftLstFrame = false,
+    const bool& mstAftLstFrame = true,
     const uint32_t& milliSeconds = 0,
     const bool& echo = false) {
     uint8_t idx = idxIn;
@@ -420,6 +412,7 @@ void expectTxMultiFrame(MockUart& mock,
 
     if (type == TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG) {
         size = 0;
+        idx = 0;
     }
 
     if (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG) {
@@ -439,7 +432,7 @@ void expectTxMultiFrame(MockUart& mock,
         expectHdr(mock, UART, hdr, port, echo);
     }
 
-    size = UNIT - (size + (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG ? sizeof(L4Hdr::msgLen) + sizeof(txOrder) + sizeof(L4Hdr::msgFlgs) : 0));
+    size = UNIT - (size + (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG ? sizeof(L4Hdr::msgLen) + sizeof(txOrder) + (hdr.l3hdr.dst==0? 0:sizeof(L4Hdr::msgFlgs)) : 0));
     uint8_t len = UART_FIFO_SIZE - size - (type != TxMultiFrameType::TX_MULTI_FRAME_CONT ? sizeof(PduHdr) : 0);
 
     for (;;) {
@@ -511,7 +504,7 @@ void expectTxMultiFrame(MockUart& mock,
                 PITCallback(port + L2_PIT_TIMER_START_IDX);
 
                 PduHdr hdrCpy = hdr;
-                if ((msgSize - idx) <= L4_FRAME_SIZE) {
+                if (mstAftLstFrame && (msgSize - idx) <= L4_FRAME_SIZE) {
                     hdrCpy.l2hdr.type |= L2_PKT_TYPE_MST;
                 }
                 hdrCpy.l4hdr.msgLen = (msgSize - idx) > L4_FRAME_SIZE? (msgSize - idx) - L4_FRAME_SIZE: 0;
@@ -1649,6 +1642,215 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
 }
 //#endif
 
+//#if 0
+TEST_P(MultiHop, pduBrdCst) {
+    MockUart mock;
+    g_mock = &mock;
+    testing::InSequence seq;
+    // construct message
+    static const int MSG_SIZE = 100;
+    std::array<uint8_t, MSG_SIZE> msg;
+    for (int i = 0; i < MSG_SIZE; i++) {
+        msg[i] = i;
+    }
+
+    static const int MSG2_SIZE = L4_FRAME_SIZE + 1;
+    std::array<uint8_t, MSG2_SIZE> msg2;
+    for (int i = 0; i < MSG2_SIZE; i++) { // send multiframe msg
+        msg2[i] = i;
+    }
+    uint8_t size;
+    PduHdr pduHdr{};
+
+    uint8_t idx[MAX_PORT];
+
+    // send msg
+    appBrdcast(msg.data(), MSG_SIZE, 0);
+
+    /* Test all ports brodcast message */
+
+    for (int port = 0; port < MAX_PORT; port++) {
+
+        // confirm UART TX is disabled
+        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+        uint16_t l3Addr = GetParam().l3AddrTblPrio[GetParam().pos][port];
+        uint8_t l2Addr = (l3Addr & 0x00FF);
+        if (l2Addr == 0 /* ||
+               portsTested[port]*/) {
+            continue;
+        }
+
+        // confirm RX is enabled
+        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
+
+        //appSend(msg2.data(), MSG2_SIZE, 1, 0, false);
+
+        // send MST
+        sendMstToken(mock, uart_ptrs[port], l2Addr, port);
+
+        // will send message
+
+        // first expect hdr
+        pduHdr = PduHdr{
+            .l2hdr = { 0x00, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST), 0xFF },
+            .l3hdr = { l3Addr, 0x0000, 1, 0 },
+            .l4hdr = { 0, 0, 0 }
+        };
+
+        expectTxMultiFrame(mock,
+            uart_ptrs[port],
+            port,
+            idx[port],
+            size,
+            TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
+            msg.data(),
+            msg.size(),
+            pduHdr);
+    }
+
+    /* confirm all pages are free */
+    ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
+
+    appBrdcast(msg2.data(), MSG2_SIZE, 0); /* broadcast multiframe message */
+
+    uint8_t port;
+    uint16_t l3AddrPrev;
+
+    for (port = 0; port < MAX_PORT; port++) {
+
+        // confirm UART TX is disabled
+        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+        uint16_t l3Addr = GetParam().l3AddrTblPrio[GetParam().pos][port];
+        uint8_t l2Addr = (l3Addr & 0x00FF);
+        if (l2Addr == 0 /* ||
+               portsTested[port]*/) {
+            continue;
+        }
+
+        // confirm RX is enabled
+        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
+
+        //appSend(msg2.data(), MSG2_SIZE, 1, 0, false);
+
+        // send MST
+        sendMstToken(mock, uart_ptrs[port], l2Addr, port);
+
+        // will send message
+
+        // first expect hdr
+        pduHdr = PduHdr{
+            .l2hdr = { 0x00, (L2_PKT_TYPE_PDU), 0xFF },
+            .l3hdr = { l3Addr, 0x0000, 1, 0 },
+            .l4hdr = { 0, 0, 0 }
+        };
+
+        expectTxMultiFrame(mock,
+            uart_ptrs[port],
+            port,
+            idx[port],
+            size,
+            TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
+            msg2.data(),
+            msg2.size(),
+            pduHdr);
+
+        l3AddrPrev = l3Addr;
+        break;
+    }
+    // send another brodcast msg becore the other ports have sent broadcast message 
+    appBrdcast(msg.data(), MSG_SIZE, 0); /* broadcast multiframe message */
+    uint8_t prevPort = port;
+    bool peerPortAvail = false;
+
+    for (port = 0; port < MAX_PORT; port++) {
+        if (port == prevPort) {
+            continue;
+        }
+
+        // confirm UART TX is disabled
+        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+        uint16_t l3Addr = GetParam().l3AddrTblPrio[GetParam().pos][port];
+        uint8_t l2Addr = (l3Addr & 0x00FF);
+        if (l2Addr == 0 /* ||
+               portsTested[port]*/) {
+            continue;
+        }
+
+        // confirm RX is enabled
+        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
+        peerPortAvail = true;
+        //appSend(msg2.data(), MSG2_SIZE, 1, 0, false);
+
+        // send MST
+        sendMstToken(mock, uart_ptrs[port], l2Addr, port);
+
+        // will send message
+
+        // first expect hdr
+        pduHdr = PduHdr{
+            .l2hdr = { 0x00, (L2_PKT_TYPE_PDU), 0xFF },
+            .l3hdr = { l3Addr, 0x0000, 1, 0 },
+            .l4hdr = { 0, 0, 0 }
+        };
+
+        expectTxMultiFrame(mock,
+            uart_ptrs[port],
+            port,
+            idx[port],
+            size,
+            TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
+            msg2.data(),
+            msg2.size(),
+            pduHdr,
+            false);
+
+        size = UNIT - (8 + sizeof(txOrder) + sizeof(MsgLenType)); // TODO check why expectTxMultiFrame above is not setting size properly?
+        //size += sizeof(txOrder) + sizeof(uint8_t);
+        PITCallback(port + L2_PIT_TIMER_START_IDX); // interframe silence
+
+        pduHdr.l2hdr.type |= L2_PKT_TYPE_MST;
+
+        expectTxMultiFrame(mock,
+            uart_ptrs[port],
+            port,
+            idx[port],
+            size,
+            TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG,
+            msg.data(),
+            msg.size(),
+            pduHdr);
+    }
+
+    /* Check if first port sends next brdcast message */
+    port = prevPort;
+
+    // first expect hdr
+    pduHdr = PduHdr{
+        .l2hdr = { 0x00, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST), 0xFF },
+        .l3hdr = { l3AddrPrev, 0x0000, 1, 0 },
+        .l4hdr = { 0, 0, 0 }
+    };
+
+    sendMstToken(mock, uart_ptrs[port], (l3AddrPrev & 0x00FF), port);
+
+    size = UNIT - (8 + sizeof(txOrder) + sizeof(MsgLenType)); // TODO check
+
+    expectTxMultiFrame(mock,
+        uart_ptrs[port],
+        port,
+        idx[port],
+        size,
+        (peerPortAvail? TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG: 
+            TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG),
+        msg.data(),
+        msg.size(),
+        pduHdr);
+
+    /*confirm all pages are free */
+    ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
+}
+//#endif
+
 // route tables
 static constexpr std::array<uint16_t, MAX_SUBNET> makeL3RouteTablePos1()
 {
@@ -1805,7 +2007,7 @@ INSTANTIATE_TEST_SUITE_P(
     Runs, MultiHop,
     ::testing::Values(
       //     pos port1   port2
-      Case{ 1, l3AddrTblPrioPos1, makeL3RouteTablePos1(), l3BcastInSubnetForSrcPortPos1, {3, 2} },
+      Case{ 1, l3AddrTblPrioPos1, makeL3RouteTablePos1(), l3BcastInSubnetForSrcPortPos1, {3, 2}},
       Case{ 2, l3AddrTblPrioPos2, makeL3RouteTablePos2(), l3BcastInSubnetForSrcPortPos2, {3, 2} },
       Case{ 3, l3AddrTblPrioPos3, makeL3RouteTablePos3(), l3BcastInSubnetForSrcPortPos3, {3, 3} },
       Case{ 5, l3AddrTblPrioPos5, makeL3RouteTablePos5(), l3BcastInSubnetForSrcPortPos5, {3, 0} },

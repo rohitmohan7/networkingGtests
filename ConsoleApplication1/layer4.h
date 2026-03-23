@@ -19,18 +19,12 @@
 typedef uint16_t TxOrderType;
 typedef uint16_t MsgLenType;
 
-typedef struct RxDesc_st
-{
-    uint8_t rxFrmHd;
-    uint8_t rxFrmHdOfst;
-} RxDesc_t;
-
 typedef struct __attribute__((packed)) {
     uint8_t msgNo;
     uint8_t msgFlgs;
     union {
         MsgLenType msgLen;
-        RxDesc_t rxDesc;
+        PgPtrHd_t rxDesc;
     };
 } L4Hdr;
 
@@ -41,17 +35,13 @@ typedef struct {
     TxOrderType txOrder;
     uint8_t txFrameCnt;
 
-    uint8_t head_page;
-    uint8_t tail_page;
-    uint8_t  head_off;       /* 0..UNIT-1 */
-    uint8_t  tail_used;
-    
+    PgPtr_t txPgPtr;
+
     // to do use array ?
     PgPtr_t rxPgPtr;
 
     uint8_t retryCnt;
     uint32_t retryTmr;
-    
 } stream_t;
 
 typedef struct __attribute__((packed)) {
@@ -69,7 +59,7 @@ bool getL4Pkt(L4Pkt* l4Pkt, uint16_t pos, uint8_t prio, uint8_t pktPrio);
 
 bool l4StrmEmpty(uint16_t pos, uint8_t prio);
 
-bool l4StrmEmptyAftFrme(uint16_t pos, uint8_t prio);
+bool l4StrmEmptyAftUnicstFrme(uint16_t pos, uint8_t prio);
 
 void setL4Hdr(L4Pkt* l4Pkt, uint8_t prio);
 
@@ -95,9 +85,23 @@ void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio);
 
 void l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio);
 
-void writeValToPage(stream_t *s, uint8_t *val, uint8_t len);
+void writeValToPage(PgPtr_t* pgPtr, uint8_t* val, uint8_t len);
 
 bool l4CmtRxPnding(L4Pkt* l4Pkt);
 
 void l4RxGetLastFrame(const uint8_t prio, L4Pkt *l4Pkt, PgPtr_t *frame);
+
+void setL4HdrBrdcst(L4Hdr* l4PktHdr, L4Hdr* txHdr);
+
+bool l4lstBrdcstMsgFrm(L4Hdr* l4Pkt);
+
+void l4SetBrdcastStrmPnding(L4Hdr* hdr);
+
+bool l4TxBrdcstStrmPnding(L4Hdr* l4Pkt);
+
+bool l4TxBrdcastStrmEmpty(PgPtr_t* pgPtr);
+
+bool l4StrmEmptyAftBrdcstFrme(const PgPtr_t* const pgPtr, const MsgLenType msgLen);
+
+TxOrderType l4GetStrmTxOrder(const uint8_t pos, const uint8_t prio);
 #endif

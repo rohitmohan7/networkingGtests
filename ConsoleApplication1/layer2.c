@@ -205,7 +205,7 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 								txRxFifoLen,
 								port);
 
-			if (tx_pdu_head[xfer][port] == INVALID_PAGE)
+			if (tx_pdu_head[xfer][port] == INVALID_PAGE || (idx + *len) >= RS485_FRAME_SIZE)
 			{
 				return true;
 			}

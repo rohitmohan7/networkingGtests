@@ -5,7 +5,6 @@
 #include "network.h"
 #include "pit.h"
 
-#define L2_FRAME_SIZE (RS485_FRAME_SIZE - sizeof(L2Hdr))
 #define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
 #define L4_FRAME_SIZE (L3_FRAME_SIZE - sizeof(L4Hdr))
 
@@ -23,14 +22,11 @@ void l4Init() {
 	for (int prio = 0; prio < MAX_PRIORITY; prio++) {
 		for (int pos = 0; pos < MAX_POS; pos++) {
 			stream_t* s = &streams[pos][prio];
-			s->txOrder = 0;
+			s->txOrder = ~0U;
 			memset(&s->txMsgHdr, 0x0, sizeof(L4Hdr));
 			memset(&s->rxMsgHdr, 0x0, sizeof(L4Hdr));
-			s->rxMsgHdr.rxDesc.rxFrmHd = 
-			s->head_page =
-			s->tail_page = INVALID_PAGE;
-			s->head_off = 0;
-			s->tail_used = 0;
+			s->rxMsgHdr.rxDesc.hd = INVALID_PAGE;
+			pgPtrInit(&s->txPgPtr);
 			
 			/* rx */
 			pgPtrInit(&s->rxPgPtr);
@@ -50,8 +46,8 @@ bool getL4PktHd(L4Pkt* l4Pkt, uint8_t prio, uint8_t* hd, uint8_t* offset) {
 		return true;
 	}
 
-	uint8_t currHd = s->head_page;
-	uint8_t currOfst = s->head_off;
+	uint8_t currHd = s->txPgPtr.hdPg;
+	uint8_t currOfst = s->txPgPtr.hdOfst;
 
 	// advance by frame count
 	uint8_t txBytes = (s->txFrameCnt) * L4_FRAME_SIZE;
@@ -77,14 +73,22 @@ bool getL4PktHd(L4Pkt* l4Pkt, uint8_t prio, uint8_t* hd, uint8_t* offset) {
 	return false;
 }
 
+static inline void setL4HdrMsgNoMsgLen(L4Hdr* l4PktHdr, L4Hdr* txHdr, uint8_t txFrameCnt) {
+	l4PktHdr->msgNo = txHdr->msgNo;
+	l4PktHdr->msgLen = ((txHdr->msgLen - (txFrameCnt * L4_FRAME_SIZE)) > L4_FRAME_SIZE) ?
+		((txHdr->msgLen - (txFrameCnt * L4_FRAME_SIZE)) - L4_FRAME_SIZE) : 0;
+}
+
+void setL4HdrBrdcst(L4Hdr* l4PktHdr, L4Hdr* txHdr) {
+	setL4HdrMsgNoMsgLen(l4PktHdr, txHdr, 0); // no tx frame count
+}
+
 void setL4Hdr(L4Pkt* l4Pkt, uint8_t prio) {
 	L4Hdr* l4PktHdr = &l4Pkt->hdr;
 	stream_t* ps = &streams[l4Pkt->pos][prio];
 	L4Hdr* txHdr = &ps->txMsgHdr;
-	l4PktHdr->msgNo = txHdr->msgNo;
+	setL4HdrMsgNoMsgLen(l4PktHdr, txHdr, ps->txFrameCnt);
 	l4PktHdr->msgFlgs = (txHdr->msgFlgs & ~(L4_MSG_FLAG_STREAM_PENDING | L4_MSG_FLAG_PENDING_ACK)); // unset internal flag
-	l4PktHdr->msgLen = ((txHdr->msgLen - (ps->txFrameCnt * L4_FRAME_SIZE)) > L4_FRAME_SIZE) ? 
-		((txHdr->msgLen - (ps->txFrameCnt * L4_FRAME_SIZE)) - L4_FRAME_SIZE) : 0; // remaining msg len
 }
 
 uint8_t getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t idx, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen, uint8_t prio) {
@@ -120,34 +124,9 @@ uint8_t getL4PktFrag(L4Pkt* l4Pkt, uint8_t** ptr, uint8_t idx, uint8_t* txHd, ui
 	return len;
 }
 
-static inline void readFromPgs(stream_t* s, uint8_t * val, uint8_t size) {
-	for (int i = 0; i < size; i++) {
-		if (s->head_page == INVALID_PAGE || 
-			(s->head_page == s->tail_page && s->head_off == s->tail_used)) { // TODO deterministic fail
-			memset(val, 0, size);
-			return;
-		}
-
-		uint16_t base = pageOff(s->head_page) + (s->head_off);
-		val[i] = (g_pool[base]) << (8 * i);
-		s->head_off++;
-		if (s->head_off == UNIT) {
-			uint8_t currPage = s->head_page;
-			s->head_page = g_next[s->head_page];
-			s->head_off = 0;
-			page_free(currPage);
-		}
-	}
-}
-
 static inline void freeStream(stream_t *s)
 {
-	while (s->head_page != INVALID_PAGE) {
-		uint8_t currPage = s->head_page;
-		s->head_page = g_next[currPage];
-		page_free(currPage);
-	}
-	s->tail_page = s->head_page;
+	freePgPtr(&s->txPgPtr);
 	s->txMsgHdr.msgFlgs = 0;
 }
 
@@ -155,41 +134,36 @@ static inline void freeRxStream(stream_t *s)
 {
 	freePgPtr(&s->rxPgPtr);
 	//s->rxMsgHdr.msgFlgs = 0;
-	//s->rxMsgHdr.rxDesc.rxFrmHd = INVALID_PAGE;
+	//s->rxMsgHdr.rxDesc.hd = INVALID_PAGE;
 }
 
-static inline bool clearMsgFrame(L4Pkt *l4Pkt, stream_t *s, bool allFrames)
+void l4SetBrdcastStrmPnding(L4Hdr * hdr) {
+	hdr->msgFlgs |= L4_MSG_FLAG_STREAM_PENDING;
+}
+
+static inline bool clearMsgFrame(L4Pkt *l4Pkt, stream_t *s, uint8_t pos, bool allFrames)
 {
+	PgPtr_t* pgPtr = &s->txPgPtr;
 	L4Hdr* txHdr = &s->txMsgHdr;
 	L4Hdr *hdr = l4Pkt? &l4Pkt->hdr: NULL;
 	// free till Frame length
 	uint8_t len = (!allFrames && txHdr->msgLen > L4_FRAME_SIZE) ? L4_FRAME_SIZE: 
 		(txHdr->msgLen + ((allFrames && hdr)? hdr->msgLen:0));
-	while (len > 0) {
-
-		uint8_t pageLen = UNIT - s->head_off;
-
-		if (pageLen > len) { // page has another msg just advance head
-			s->head_off += len;
-		}
-		else {
-			uint8_t currPage = s->head_page;
-			s->head_page = g_next[s->head_page];
-			page_free(currPage);
-			s->head_off = 0;
-		}
-
-		len -= (pageLen > len) ? len : pageLen;
-	}
+	freePgPtrLen(pgPtr, len);
 
 	// advance stream
-	if (s->head_page != INVALID_PAGE) {
+	if (pgPtr->hdPg != INVALID_PAGE) {
 
 		if (allFrames || !hdr || hdr->msgLen == 0) {
 			txHdr->msgNo++; // increment seq number
-			readFromPgs(s, (uint8_t*)&txHdr->msgLen, sizeof(txHdr->msgLen));
-			readFromPgs(s, (uint8_t*)&s->txOrder, sizeof(TxOrderType));
-			readFromPgs(s, (uint8_t*)&s->txMsgHdr.msgFlgs, sizeof(s->txMsgHdr.msgFlgs));
+#if 0 /* TODO Check why below dosnt work */
+			static const uint8_t msgNumLen = sizeof(uint8_t);
+			readFromPgs(pgPtr, ((uint8_t*)txHdr) + msgNumLen, sizeof(txHdr->msgFlgs) + sizeof(txHdr->msgLen));
+#endif
+			
+			readFromPgs(pgPtr, (uint8_t*)&txHdr->msgFlgs, sizeof(txHdr->msgFlgs));
+			readFromPgs(pgPtr, (uint8_t*)&txHdr->msgLen, sizeof(txHdr->msgLen));
+			readFromPgs(pgPtr, (uint8_t*)&s->txOrder, sizeof(TxOrderType));
 
 			if (txHdr->msgLen == 0 && 
 				s->txMsgHdr.msgFlgs == 0) { //  no more message pending free stream
@@ -203,11 +177,21 @@ static inline bool clearMsgFrame(L4Pkt *l4Pkt, stream_t *s, bool allFrames)
 			}
 		}
 		else {
-			txHdr->msgLen = hdr->msgLen;
+			//txHdr->msgLen = hdr->msgLen;
+			txHdr->msgLen -= len;
+			s->txMsgHdr.msgFlgs |= L4_MSG_FLAG_STREAM_PENDING;
 		}
 		return false;
 	}
 	return true;
+}
+
+bool l4lstBrdcstMsgFrm(L4Hdr* l4Pkt) {
+	bool ret = l4Pkt->msgLen < L4_FRAME_SIZE;
+}
+
+bool l4TxBrdcstStrmPnding(L4Hdr* l4Hdr) {
+	return (l4Hdr->msgFlgs & L4_MSG_FLAG_STREAM_PENDING);
 }
 
 bool l4lstMsgFrm(uint16_t pos, uint8_t prio) {
@@ -219,7 +203,7 @@ void l4TxCmplt(L4Pkt* l4Pkt, uint8_t prio) {
 	stream_t *s = &streams[l4Pkt->pos][prio];
 	if (!(l4Pkt->hdr.msgFlgs & L4_MSG_FLAG_REQ_ACK)) { 
 		// this msg does not require an ack, frame can be cleared from page buffer
-		clearMsgFrame(l4Pkt, s, false);
+		clearMsgFrame(l4Pkt, s, l4Pkt->pos, false);
 	} else {
 		 
 		 if (l4lstMsgFrm(l4Pkt->pos, prio)) {
@@ -229,13 +213,23 @@ void l4TxCmplt(L4Pkt* l4Pkt, uint8_t prio) {
 		 }
 		 s->txFrameCnt++;
 	 }
-
-	 s->txMsgHdr.msgFlgs = l4Pkt->hdr.msgLen
-							   ? (s->txMsgHdr.msgFlgs | L4_MSG_FLAG_STREAM_PENDING)
-							   : (s->txMsgHdr.msgFlgs & ~L4_MSG_FLAG_STREAM_PENDING);
 }
 
-bool l4StrmEmptyAftFrme(uint16_t pos, uint8_t prio) {
+static inline bool l4StrmEmptyAftFrme(const PgPtr_t* const pgPtr, const MsgLenType msgLen) {
+	/* make a copy of pgPtr */
+	PgPtr_t pgPtrCpy = *pgPtr;
+
+	/* advance by msg len or frame size */
+	advancePgPtrLen(&pgPtrCpy, min(msgLen, L4_FRAME_SIZE));
+
+	return pgPtrCpy.hdPg == INVALID_PAGE; // these is still message after this frame or msglen
+}
+
+bool l4StrmEmptyAftBrdcstFrme(const PgPtr_t* const pgPtr, const MsgLenType msgLen) {
+	return l4StrmEmptyAftFrme(pgPtr, msgLen);
+}
+
+bool l4StrmEmptyAftUnicstFrme(uint16_t pos, uint8_t prio) {
 	stream_t* s = &streams[pos][prio];
 
 	if ((s->txMsgHdr.msgFlgs & L4_MSG_FLAG_REQ_ACK) && l4lstMsgFrm(pos, prio)) {
@@ -243,16 +237,21 @@ bool l4StrmEmptyAftFrme(uint16_t pos, uint8_t prio) {
 		return true;
 	}
 
-	// check size remaining in page buff
-	const uint16_t base = pageOff(s->head_page) + (uint16_t)(s->head_off);
-	const uint16_t end = pageOff(s->tail_page) + (uint16_t)(s->tail_used);
+	return l4StrmEmptyAftFrme(&s->txPgPtr, s->txMsgHdr.msgNo);
+}
 
-	return (end - base) <= L4_FRAME_SIZE;
+TxOrderType l4GetStrmTxOrder(const uint8_t pos, const uint8_t prio) {
+	stream_t* s = &streams[pos][prio];
+	return s->txOrder;
+}
+
+bool l4TxBrdcastStrmEmpty(PgPtr_t * pgPtr) {
+	return pgPtr->hdPg == INVALID_PAGE;
 }
 
 bool l4StrmEmpty(uint16_t pos, uint8_t prio) {
 	stream_t* ps = &streams[pos][prio];
-	if (ps->head_page == INVALID_PAGE) {
+	if (ps->txPgPtr.hdPg == INVALID_PAGE) {
 		return true;
 	}
 	return false;
@@ -271,7 +270,9 @@ bool getL4Pkt(L4Pkt* l4Pkt, uint16_t pos, uint8_t prio, uint8_t pktPrio) {
 
 	stream_t* ps = &streams[pos][prio];
 
-	if ((ps->head_page != INVALID_PAGE || ps->txMsgHdr.msgFlgs & L4_MSG_FLAG_TYPE_ACK) &&
+	/* TODO check why ? <= than < ? */
+
+	if ((ps->txPgPtr.hdPg != INVALID_PAGE || ps->txMsgHdr.msgFlgs & L4_MSG_FLAG_TYPE_ACK) &&
 		ps->txOrder <= currTxOrder)
 	{ // nothing to send
 
@@ -282,7 +283,7 @@ bool getL4Pkt(L4Pkt* l4Pkt, uint16_t pos, uint8_t prio, uint8_t pktPrio) {
 				if (ps->retryCnt >= MAX_L4_RETRY)
 				{
 					// drop move and move to next msg
-					const bool strmEmpty = clearMsgFrame(l4Pkt, ps, true);
+					const bool strmEmpty = clearMsgFrame(l4Pkt, ps, pos, true);
 					const bool txOrdrPrempt = ((l4Pkt->pos != pos) || (pktPrio != prio)) && 
 						(ps->txOrder > currTxOrder);
 
@@ -306,24 +307,15 @@ bool getL4Pkt(L4Pkt* l4Pkt, uint16_t pos, uint8_t prio, uint8_t pktPrio) {
 	return false;
 }
 
-void writeValToPage(stream_t *s, uint8_t *val, uint8_t len)
+void writeValToPage(PgPtr_t * pgPtr, uint8_t *val, uint8_t len)
 {
-	for (int size = 0; size < len; size++)
-	{
-		if (s->tail_used == UNIT)
-		{
-			uint8_t p = page_alloc();
-			g_next[s->tail_page] = p;
-			s->tail_page = page_alloc();
-			g_pool[pageOff(s->tail_page)] = val[size];
-			s->tail_used = 1U;
-		}
-		else
-		{
-			const uint32_t base = pageOff(s->tail_page) + (uint32_t)s->tail_used;
-			g_pool[base] = val[size];
-			s->tail_used++;
-		}
+	while (len) {
+		uint8_t writeLen;
+		uint8_t* ptr = getPgPtr(pgPtr, &writeLen, len);
+		writeLen = min(len, writeLen);
+		memcpy(ptr, val, writeLen);
+		val += writeLen;
+		len -= writeLen;
 	}
 }
 
@@ -331,11 +323,12 @@ void l4SndAck(stream_t *const s)
 {
 	MsgLenType len = 0;
 	uint8_t msgFlgs = L4_MSG_FLAG_TYPE_ACK;
-	if (s->tail_page != INVALID_PAGE)
+	PgPtr_t* pgPtr = &s->txPgPtr;
+	if (pgPtr->tlPg != INVALID_PAGE)
 	{ // stream is corrupted here ? should free everything ? TODO
-		writeValToPage(s, (uint8_t *)&len, sizeof(len));
-		writeValToPage(s, (uint8_t *)&txOrder, sizeof(txOrder));
-		writeValToPage(s, (uint8_t *)&msgFlgs, sizeof(msgFlgs));
+		writeValToPage(pgPtr, (uint8_t *)&len, sizeof(len));
+		writeValToPage(pgPtr, (uint8_t *)&txOrder, sizeof(txOrder));
+		writeValToPage(pgPtr, (uint8_t *)&msgFlgs, sizeof(msgFlgs));
 	} else {
 		s->txMsgHdr.msgLen = len;
 		s->txMsgHdr.msgFlgs = msgFlgs;
@@ -353,7 +346,7 @@ void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio) { // recieved a frame
 		if ((s->txMsgHdr.msgFlgs & L4_MSG_FLAG_PENDING_ACK) &&
 			 s->txMsgHdr.msgNo == l4Hdr->msgNo)
 		{ // message was successfully sent
-			clearMsgFrame(NULL, s, true);
+			clearMsgFrame(NULL, s, l4Pkt->pos, true);
 		}
 	}
 	else if (l4Hdr->msgLen == 0)
@@ -368,7 +361,7 @@ void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio) { // recieved a frame
 		}
 	}
 
-	s->rxMsgHdr.rxDesc.rxFrmHd = INVALID_PAGE;
+	s->rxMsgHdr.rxDesc.hd = INVALID_PAGE;
 }
 
 uint8_t getL4RxPktFrag(L4Pkt *l4Pkt, uint8_t **ptr, uint8_t rxLen, uint8_t prio)
@@ -406,8 +399,8 @@ void l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio)
 	}
 
 	// keep track of prev head
-	s->rxMsgHdr.rxDesc.rxFrmHd = s->rxPgPtr.tlPg;
-	s->rxMsgHdr.rxDesc.rxFrmHdOfst = s->rxPgPtr.tlUsd;
+	s->rxMsgHdr.rxDesc.hd = s->rxPgPtr.tlPg;
+	s->rxMsgHdr.rxDesc.hdOfst = s->rxPgPtr.tlUsd;
 
 	l4Hdr->msgFlgs |= L4_MSG_FLAG_RXHD_CMT;
 }
@@ -415,7 +408,7 @@ void l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio)
 void l4AbortRx(L4Pkt* l4Pkt, const uint8_t prio) {
 	// clear current frame
 	stream_t* const s = &streams[l4Pkt->pos][prio];
-	const uint8_t frmHd = s->rxMsgHdr.rxDesc.rxFrmHd;
+	const uint8_t frmHd = s->rxMsgHdr.rxDesc.hd;
 
 	if (frmHd != INVALID_PAGE) {
 		// clear frame
@@ -429,7 +422,7 @@ void l4AbortRx(L4Pkt* l4Pkt, const uint8_t prio) {
 
 			// set new stream tail
 			s->rxPgPtr.tlPg = frmHd;
-			s->rxPgPtr.tlUsd = s->rxMsgHdr.rxDesc.rxFrmHdOfst;
+			s->rxPgPtr.tlUsd = s->rxMsgHdr.rxDesc.hdOfst;
 		}
 	}
 }
@@ -438,16 +431,21 @@ void l4RxGetLastFrame(const uint8_t prio, L4Pkt *l4Pkt, PgPtr_t *frame)
 {
 	stream_t *const s = &streams[l4Pkt->pos][prio];
 	
-	if (s->rxMsgHdr.rxDesc.rxFrmHd == INVALID_PAGE) {
+	if (s->rxMsgHdr.rxDesc.hd == INVALID_PAGE) {
 		/* First frame */
 		frame->hdPg = s->rxPgPtr.hdPg;
 		frame->hdOfst = s->rxPgPtr.hdOfst;
 	} else {
-		frame->hdPg = s->rxMsgHdr.rxDesc.rxFrmHd;
-		frame->hdOfst = s->rxMsgHdr.rxDesc.rxFrmHdOfst;
+		frame->hdPg = s->rxMsgHdr.rxDesc.hd;
+		frame->hdOfst = s->rxMsgHdr.rxDesc.hdOfst;
 	}
 		
 	frame->tlPg = s->rxPgPtr.tlPg;
 	frame->tlUsd = s->rxPgPtr.tlUsd;
 	addUser(frame);
+}
+
+TxOrderType l4GetTxOrder(const uint8_t pos, const uint8_t prio) {
+	const stream_t* const s = &streams[pos][prio];
+	return s->txOrder;
 }

@@ -1,4 +1,5 @@
 ﻿#include "allocator.h"
+#include <stdbool.h>
 
 uint8_t g_next[NUM_PAGES];
 uint8_t   g_pool[POOL_BYTES];
@@ -30,6 +31,10 @@ uint8_t page_alloc(void)
 
 void page_free(uint8_t p)
 {
+    g_users[p]--;
+    if (g_users[p]) {
+        return; // dont free yet there is still a user
+    }
     g_next[p] = g_free_head;
     g_free_head = p;
     g_free_count++;
@@ -79,14 +84,68 @@ void freePgPtr(PgPtr_t * pgPtr)
     {
         uint8_t currPage = pgPtr->hdPg;
         pgPtr->hdPg = g_next[currPage];
-
-        g_users[currPage]--;
-        if (!g_users[currPage])
-        {
-            page_free(currPage); // free page if not used by anyone else
-        }
+        page_free(currPage); // free page if not used by anyone else
     }
     pgPtr->tlPg = pgPtr->hdPg;
+    pgPtr->tlUsd = pgPtr->hdOfst = 0;
+}
+
+static inline void movePgPtr(PgPtr_t* pgPtr, uint8_t len, bool free) {
+    while (len)
+    {
+        uint8_t take = min(len, (UNIT - pgPtr->hdOfst));
+        len -= take;
+        pgPtr->hdOfst += take;
+
+        if (pgPtr->hdPg == pgPtr->tlPg &&
+            (pgPtr->hdOfst >= pgPtr->tlUsd)) {
+            if (free) {
+                freePgPtr(pgPtr);
+            } else {
+                pgPtr->tlPg = pgPtr->hdPg = INVALID_PAGE;
+                pgPtr->tlUsd = pgPtr->hdOfst = 0;
+            }
+            break;
+        }
+        else if (pgPtr->hdOfst == UNIT) {
+            /* free and advance head */
+            uint8_t currPage = pgPtr->hdPg;
+            pgPtr->hdPg = g_next[currPage];
+            if (free) {
+                page_free(currPage);
+            }
+            if (pgPtr->hdPg == INVALID_PAGE) {
+                pgPtr->tlPg == INVALID_PAGE;
+                break;
+            }
+
+            pgPtr->hdOfst = 0;
+        }
+    }
+}
+
+void freePgPtrLen(PgPtr_t* pgPtr, uint8_t len) {
+    movePgPtr(pgPtr, len, true);
+}
+
+void advancePgPtrLen(PgPtr_t* pgPtr, uint8_t len) {
+    movePgPtr(pgPtr, len, false);
+}
+
+void freePgPtrHd(PgPtrHd_t * pgPtrHd, uint8_t len) {
+    while (len && pgPtrHd->hd != INVALID_PAGE)
+    {
+        uint8_t take = min(len, (UNIT - pgPtrHd->hdOfst));
+        len -= take;
+        pgPtrHd->hdOfst += take;
+        if (pgPtrHd->hdOfst == UNIT) {
+            /* free and advance head */
+            uint8_t currPage = pgPtrHd->hd;
+            pgPtrHd->hd = g_next[currPage];
+            page_free(currPage);
+            pgPtrHd->hdOfst = 0;
+        }
+    }
 }
 
 void addUser(PgPtr_t *pgPtr)
@@ -107,4 +166,37 @@ void pgPtrInit(PgPtr_t * const pgPtr)
 {
     pgPtr->hdPg = pgPtr->tlPg = INVALID_PAGE;
     pgPtr->hdOfst = pgPtr->tlUsd = 0;
+}
+
+void pgPtrHdInit(PgPtrHd_t* const pgPtrHd)
+{
+    pgPtrHd->hd = INVALID_PAGE;
+    pgPtrHd->hdOfst = 0;
+}
+
+uint8_t getPgUsers(uint8_t pg) {
+    if (pg == INVALID_PAGE) {
+        return 0;
+    }
+    return g_users[pg];
+}
+
+void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint8_t size) {
+    for (int i = 0; i < size; i++) {
+        if (pgPtr->hdPg == INVALID_PAGE ||
+            (pgPtr->hdPg == pgPtr->tlPg && pgPtr->hdOfst == pgPtr->tlUsd)) { // TODO deterministic fail
+            memset(val, 0, size);
+            return;
+        }
+
+        uint16_t base = pageOff(pgPtr->hdPg) + (pgPtr->hdOfst);
+        val[i] = (g_pool[base]) << (8 * i);
+        pgPtr->hdOfst++;
+        if (pgPtr->hdOfst == UNIT) {
+            uint8_t currPage = pgPtr->hdPg;
+            pgPtr->hdPg = g_next[pgPtr->hdPg];
+            pgPtr->hdOfst = 0;
+            page_free(currPage);
+        }
+    }
 }

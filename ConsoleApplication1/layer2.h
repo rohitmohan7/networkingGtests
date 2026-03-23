@@ -45,6 +45,7 @@ typedef struct __attribute__((packed)) {
 	l2Crc crc;
 } L2Hdr;
 //_Static_assert(sizeof(L2Hdr) == 2, "L2Hdr wrong size");
+#define L2_FRAME_SIZE (RS485_FRAME_SIZE - sizeof(L2Hdr))
 
 typedef struct {
 	L2Hdr l2hdr;

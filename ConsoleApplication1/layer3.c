@@ -20,8 +20,8 @@ uint8_t l3RouteHops[MAX_SUBNET]; // l3 hop table for my pos
 
 typedef struct
 {
-	uint32_t srcIp;
-	uint32_t dstIp;
+	uint32_t src;
+	uint32_t dst;
 	FragIdType_t id;
 	Protocol_t proto;
 } IpReassKey_t;
@@ -752,7 +752,7 @@ uint8_t getL3RxPktFrag(uint8_t port, L3Pkt *l3Pkt, uint8_t **ptr, uint8_t rxLen)
 	}
 #endif
 	uint8_t len;
-	*ptr = getPgPtr(l3Pkt->ipReassQueue->rxPgPtr, &len, rxLen);
+	*ptr = getPgPtr(&l3Pkt->ipReassQueue->rxPgPtr, &len, rxLen);
 	return len;
 	//return getL4RxPktFrag(&l3Pkt->l4Pkt, ptr, rxLen, l3Hdr->prio);
 }
@@ -761,7 +761,7 @@ static inline bool ipReassKeyEqual(const IpReassKey_t * key, const L3Hdr * hdr)
 {
 	return (key->src == hdr->src) &&
 		   (key->dst == hdr->dst) &&
-		   (key->id == hdr->id) &&
+		   (key->id == hdr->fragId) &&
 		   (key->proto == hdr->proto);
 }
 
@@ -771,18 +771,18 @@ static bool ipReassLoadRxPgPTr(IpReassQueue_t *const ipReassObj, const uint16_t 
 	/* set up to frag idx */
 	uint16_t fragIdx = (fragOfst & 0x1FFF);
 
-	if (g_ipReass[i].pgPtr.hdPg == INVALID_PAGE) {
+	if (ipReassObj->pgPtr.hdPg == INVALID_PAGE) {
 		while (fragIdx) { /* allocate until fragidx */
 			uint8_t len;
-			getPgPtr(&g_ipReass[i].pgPtr, &len, fragIdx);
+			getPgPtr(&ipReassObj->pgPtr, &len, fragIdx);
 			fragIdx -= len;
 		}
 		/* set the rx */
-		memset(&g_ipReass[i].rxpgPtr, &g_ipReass[i].pgPtr.tlPg , sizeof(PgPtrTl_t));
-		memset(&g_ipReass[i].rxpgPtr.tlPg, &g_ipReass[i].pgPtr.tlPg, sizeof(PgPtrTl_t));
+		memset(&ipReassObj->rxPgPtr, &ipReassObj->pgPtr.tlPg , sizeof(PgPtrTl_t));
+		memset(&ipReassObj->rxPgPtr.tlPg, &ipReassObj->pgPtr.tlPg, sizeof(PgPtrTl_t));
 	} else {
-		memset(&g_ipReass[i].rxpgPtr, &g_ipReass[i].pgPtr, sizeof(PgPtr_t));
-		advancePgPtrLen(&g_ipReass[i].rxpgPtr, fragIdx); // advance to frame idx
+		memset(&ipReassObj->rxPgPtr, &ipReassObj->pgPtr, sizeof(PgPtr_t));
+		advancePgPtrLen(&ipReassObj->rxPgPtr, fragIdx); // advance to frame idx
 	}
 	return true;
 }

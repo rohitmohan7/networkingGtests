@@ -1,8 +1,11 @@
 ﻿#include <stdbool.h>
 #include <stdint.h>
+#include "allocator.h"
+
+
 
 bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, bool retry);
 
-bool appRecv(uint16_t pos, uint8_t priority);
+void appRecv(uint16_t pos, const uint8_t* const data, MsgLenType_t len);
 
 bool appBrdcast(const uint8_t* data, uint16_t len, uint8_t priority);

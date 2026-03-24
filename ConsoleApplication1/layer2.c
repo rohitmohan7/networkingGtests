@@ -100,7 +100,7 @@ static inline uint8_t getPktType(L2Pkt* pkt) {
 }
 
 void l2CmtRx(port) {
-	const uint8_t rxIdx = l1RxCmplt(port); // TODO validate MSG length
+	const uint8_t rxLen = l1RxCmplt(port) - sizeof(L2Crc_t) - sizeof(L2Hdr); // TODO validate MSG length
 
 	uint8_t rxType = l2RxPktDesc[port].l2RxPkt.hdr.type;
 
@@ -125,7 +125,7 @@ void l2CmtRx(port) {
 
 	switch (rxType) { //TODO
 	case L2_PKT_TYPE_PDU:
-		l3CmtRx(&l2RxPktDesc[port].l2RxPkt.msg.pdu, port);
+		l3CmtRx(&l2RxPktDesc[port].l2RxPkt.msg.pdu, port, rxLen);
 		break;
 	default:
 		break;

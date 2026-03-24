@@ -185,7 +185,7 @@ void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint8_t size) {
     for (int i = 0; i < size; i++) {
         if (pgPtr->hdPg == INVALID_PAGE ||
             (pgPtr->hdPg == pgPtr->tlPg && pgPtr->hdOfst == pgPtr->tlUsd)) { // TODO deterministic fail
-            memset(val, 0, size);
+            memset(val, 0, i); // revert any reads
             return;
         }
 

@@ -9,10 +9,36 @@
 #define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
 #define L4_FRAME_SIZE (L3_FRAME_SIZE - sizeof(L4Hdr))
 
+#define IP_MORE_FRAG_MASK 0x1000
+
 uint16_t l3AddrTblPrio[MAX_POS][MAX_PORT]; // pos addresses ordered by tx priority
 uint16_t l3RouteTable[MAX_SUBNET]; // next best gateway for subnet
 uint8_t l3BcastInSubnetForSrcPort[MAX_POS][MAX_PORT];
 uint8_t l3RouteHops[MAX_SUBNET]; // l3 hop table for my pos
+
+#define IP_REASS_TIMEOUT_TICKS 10*1000 // 10 seconds
+
+typedef struct
+{
+	uint32_t srcIp;
+	uint32_t dstIp;
+	FragIdType_t id;
+	Protocol_t proto;
+} IpFragKey_t;
+
+typedef struct IpReassQueue_st {
+	IpFragKey_t key;
+	uint32_t expireTick;
+	PgPtr_t pgPtr;
+	PgPtr_t rxPgPtr;
+	uint16_t maxLen;
+	uint16_t rxLen;
+	bool used;
+} IpReassQueue_t;
+
+#define IP_MAX_REASS_QUEUES 10
+/*src pos*/ /*dst pos*/ /* proto */
+IpReassQueue_t g_ipReass[IP_MAX_REASS_QUEUES];
 
 #define LOW_PRIO_IDX 1
 #define BROADCAST_ADDR 0x0000
@@ -260,7 +286,7 @@ uint8_t l3GetRxPktHdrSize(L3Pkt *l3Pkt, uint8_t port)
 	return ret;
 }
 
-bool l3TxBrdcstMsg(const uint8_t* data, MsgLenType len, uint8_t priority) {
+bool l3TxBrdcstMsg(const uint8_t* data, MsgLenType_t len, uint8_t priority) {
 	/* Critical Section: Function should be gated against interrupt from RS485 UART or PIT to avoid data sync issues */
 	PgPtr_t * pgPtr = NULL;
 	PgPtrTl_t pgPtrTl;
@@ -340,10 +366,20 @@ bool l3TxBrdcstMsg(const uint8_t* data, MsgLenType len, uint8_t priority) {
 	return pgPtr != NULL;
 }
 
+static inline void l3InitIpReassQ(IpReassQueue_t * const q) {
+	memset(&q->key, 0, sizeof(q->key));
+	pgPtrInit(&q->pgPtr);
+	q->rxLen = q->maxLen = 0;
+	q->used = false; // maybe can be removed?
+}
+
 void l3Init(void) {
 #if MAX_PORT > 1
 	l3FrwdQInit();
 #endif
+	for (uint8_t qIdx = 0; qIdx < IP_MAX_REASS_QUEUES; qIdx++) {
+		l3InitIpReassQ(&g_ipReass[qIdx]);
+	}
 }
 
 static inline void l3TxCmpltBrdcstPkt(const L3Pkt* const l3Pkt, const uint8_t port) {
@@ -431,7 +467,6 @@ void l3AbortRx(L3Pkt* const l3Pkt, const uint8_t port) {
 
 static inline void setL3Hdr(L3Hdr* const l3Hdr, const uint16_t src, const uint8_t prio, uint16_t dstAddr) {
 	l3Hdr->src = src;
-	l3Hdr->ttl = 1;
 	l3Hdr->prio = prio;
 	l3Hdr->dst = dstAddr;
 }
@@ -447,10 +482,10 @@ uint8_t setL3HdrBrdcst(L3Pkt * const l3Pkt, uint8_t port, uint8_t prio, uint16_t
 uint8_t setL3HdrUnicst(L3Pkt * const l3Pkt, uint8_t port, uint8_t prio, uint16_t pos) {
 	L3Hdr * const l3Hdr = &l3Pkt->hdr;
 	setL3Hdr(l3Hdr, l3AddrTblPrio[myPos][port], prio, l3AddrTblPrio[pos][L3_DST_ADDR_IDX]);
-	l3Hdr->ttl = 1;
 	setL4Hdr(&l3Pkt->l4Pkt, prio);
 	const uint8_t dstSubnet = (l3Hdr->dst & 0xFF00) >> 8;
 	const uint8_t portSubnet = ((l3Hdr->src & 0xFF00) >> 8);
+	l3Hdr->ttl = l3RouteHops[dstSubnet] + 1;
 	return ((dstSubnet == portSubnet)? l3Hdr->dst: l3RouteTable[dstSubnet]) & 0x00FF; // return l2Addr
 }
 
@@ -709,18 +744,102 @@ uint8_t getL3RxPktFrag(uint8_t port, L3Pkt *l3Pkt, uint8_t **ptr, uint8_t rxLen)
 	}
 #endif
 
+#if 0
 	if (l4CmtRxPnding(&l3Pkt->l4Pkt)) { // hdr only message will no have identified stream yet ..
 		if (!l3CmtL4RxHd(l3Pkt)) {
 			return; // abort processing
 		}
 	}
+#endif
+	uint8_t len;
+	*ptr = getPgPtr(l3Pkt->ipReassQueue.rxPgPtr, &len, rxLen);
+	return len;
+	//return getL4RxPktFrag(&l3Pkt->l4Pkt, ptr, rxLen, l3Hdr->prio);
+}
 
-	return getL4RxPktFrag(&l3Pkt->l4Pkt, ptr, rxLen, l3Hdr->prio);
+static inline bool ipReassKeyEqual(const IpReassKey_t * key, const L3Hdr * hdr)
+{
+	return (key->src == hdr->src) &&
+		   (key->dst == hdr->dst) &&
+		   (key->id == hdr->id) &&
+		   (key->proto == hdr->proto);
+}
+
+static bool ipReassLoadRxPgPTr(IpReassQueue_t *const ipReassObj, const uint16_t fragOfst)
+{
+	/* Todo check if there is enough pages else fail early */
+	/* set up to frag idx */
+	uint16_t fragIdx = (fragOfst & 0x1FFF);
+
+	if (g_ipReass[i].pgPtr.hdPg == INVALID_PAGE) {
+		while (fragIdx) { /* allocate until fragidx */
+			uint8_t len;
+			getPgPtr(&g_ipReass[i].pgPtr, &len, fragIdx);
+			fragIdx -= len;
+		}
+		/* set the rx */
+		memset(&g_ipReass[i].rxpgPtr, &g_ipReass[i].pgPtr.tlPg , sizeof(PgPtrTl_t));
+		memset(&g_ipReass[i].rxpgPtr.tlPg, &g_ipReass[i].pgPtr.tlPg, sizeof(PgPtrTl_t));
+	} else {
+		memset(&g_ipReass[i].rxpgPtr, &g_ipReass[i].pgPtr, sizeof(PgPtr_t));
+		advancePgPtrLen(&g_ipReass[i].rxpgPtr, fragIdx); // advance to frame idx
+	}
+	return true;
+}
+
+static inline IpReassQueue_t * ipReassFindQueue(const L3Hdr * hdr)
+{
+	uint8_t i;
+	for (i = 0U; i < IP_MAX_REASS_QUEUES; i++)
+	{
+		if (ipReassKeyEqual(&g_ipReass[i].key, hdr) == true) {
+			return &g_ipReass[i];
+		}
+	}
+	return NULL;
+}
+
+static inline IpReassQueue_t * ipReassAllocQueue(const L3Hdr * hdr)
+{
+    uint8_t i;
+    for (i = 0U; i < IP_MAX_REASS_QUEUES; i++)
+    {
+		if (g_ipReass[i].key.proto == IP_PROTO_UNKOWN)
+		{
+			memcpy(&g_ipReass[i].key, hdr, sizeof(IpFragKey_t));	/* make sure hdr first bytes is key */		
+			g_ipReass[i].expireTick = pitGetCurrMS() + IP_REASS_TIMEOUT_TICKS;
+			return &g_ipReass[i];
+        }
+    }
+    return NULL;
 }
 
 bool l3CmtRxHd(L3Pkt *l3Pkt, const uint8_t port) { // called from L2
 	L3Hdr *l3Hdr = &l3Pkt->hdr;
 
+	if (!l3Hdr->ttl) {
+		return false; // drop packet
+	}
+
+	if (l3RxfrwdPkt(l3Hdr, port)) {
+		/* TODO */
+		return false;
+	}
+
+	IpReassQueue_t *q = ipReassFindQueue(l3Hdr);
+
+	if (!q) {
+		q = ipReassAllocQueue(l3Hdr);
+	}
+	
+	if (!q || !ipReassLoadRxPgPTr(q, l3Hdr->fragOfst)) {
+		return false;
+	}
+
+	l3Pkt->ipReassQueue = q;
+	return true;
+
+#if 0
 	if (l3Hdr->prio > MAX_PRIORITY)
 	{ // check prio
 		return false;
@@ -760,8 +879,9 @@ bool l3CmtRxHd(L3Pkt *l3Pkt, const uint8_t port) { // called from L2
 		return false;
 	}
 #endif
+#endif
 
-	return true/*l3CmtL4RxHd(l3Pkt)*/;
+		return true /*l3CmtL4RxHd(l3Pkt)*/;
 }
 
 bool l3RxCmplt(uint8_t rxIdx) {
@@ -774,42 +894,51 @@ bool l3RxCmplt(uint8_t rxIdx) {
 	return true;
 }
 
-void l3CmtRx(L3Pkt * const l3Pkt, const uint8_t port)
+void l3CmtRx(L3Pkt * const l3Pkt, const uint8_t port, uint8_t l3RxLen)
 {
 	// check if message if for this device
-	const L3Hdr *l3Hdr = &l3Pkt->hdr;
+	L3Hdr * const l3Hdr = &l3Pkt->hdr;
 
 #if MAX_PORT > 1
-	if (!l3Hdr->ttl) {
-		return; // drop packet
-	}
 	
 	if (l3RxfrwdPkt(l3Hdr, port)) {
-		PgPtr_t *frwdQPgPtr = l3PushFrwdPkt(l3Pkt, l3Pkt->frwdPkt.dstPort);
-		if (frwdQPgPtr) {
-			/* copy pg ptr */
-			memcpy(frwdQPgPtr, &l3RxFrwdPktPgPtr[port], sizeof(PgPtr_t));
-			pgPtrInit(&l3RxFrwdPktPgPtr[port]);
-		} else {
-			/* Todo do we let the sender know  that frwd queue is full?*/
-			freePgPtr(&l3RxFrwdPktPgPtr[port]);
+		if (l3Hdr->ttl > 1) {
+			l3Hdr->ttl--;
+			PgPtr_t *frwdQPgPtr = l3PushFrwdPkt(l3Pkt, l3Pkt->frwdPkt.dstPort);
+			if (frwdQPgPtr) {
+				/* copy pg ptr */
+				memcpy(frwdQPgPtr, &l3RxFrwdPktPgPtr[port], sizeof(PgPtr_t));
+				pgPtrInit(&l3RxFrwdPktPgPtr[port]);
+			} else {
+				/* Todo do we let the sender know  that frwd queue is full?*/
+				freePgPtr(&l3RxFrwdPktPgPtr[port]);
+			}
 		}
 		return;
 	}
 #endif
 
-	if (l4CmtRxPnding(&l3Pkt->l4Pkt)) { // hdr only message will no have identified stream yet ..
-		if (!l3CmtL4RxHd(l3Pkt)) {
-			return; // abort processing
-		}
-	}
-
 #if MAX_PORT > 1
 	/* Check to brodcast */
-	if (l3TxBrdcstPkt(l3Hdr)) {
+	if (l3TxBrdcstPkt(l3Hdr) && l3Hdr->ttl > 1) {
+		l3Hdr->ttl--;
 		l3BrdCst(port, l3Pkt);
 	}
 #endif
+	IpReassQueue_t *q = l3Pkt->ipReassQueue;
+	bool moreFragments = l3Hdr->fragOfst & IP_MORE_FRAG_MASK;
+	l3RxLen -= sizeof(L3Hdr);
+	q->rxLen += l3RxLen;
+	
+	if (!moreFragments) { // this is the last frag
+		// set max len
+		uint16_t fragIdx = (l3Hdr->fragOfst & 0x1FFF);
+		q->maxLen = fragIdx + l3RxLen;
+	}
 
-	l4CmtRx(&l3Pkt->l4Pkt, l3Hdr->prio);
+	if (q->maxLen == q->rxLen) {
+		l4CmtRx(&q->pgPtr, q->key.proto, q->maxLen);
+		l3InitIpReassQ(q); // release the q
+	}
+	//l4CmtRx(&l3Pkt->l4Pkt, l3Hdr->prio);
 }

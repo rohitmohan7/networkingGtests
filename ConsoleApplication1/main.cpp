@@ -44,6 +44,7 @@ struct Case {
     std::array<std::array<uint16_t, MAX_PORT>, MAX_POS> l3AddrTblPrio;
     std::array<uint16_t, MAX_SUBNET> l3RouteTable;
     std::array<std::array<uint8_t, MAX_PORT>, MAX_POS> l3BcastInSubnetForSrcPort;
+    std::array<uint8_t, MAX_SUBNET> l3RouteHops;
     std::array<uint8_t, MAX_PORT> devCnt;
     //uin
 };
@@ -1171,13 +1172,15 @@ TEST_P(MultiHop, addr) {
     // check route table
     ASSERT_EQ(0, std::memcmp(GetParam().l3RouteTable.data(), l3RouteTable, sizeof(l3RouteTable)));
 
+    ASSERT_EQ(0, std::memcmp(GetParam().l3RouteHops.data(), l3RouteHops, sizeof(l3RouteHops)));
+
     // check correct brdcst table
     ASSERT_EQ(0, std::memcmp(GetParam().l3BcastInSubnetForSrcPort.data(), l3BcastInSubnetForSrcPort, sizeof(l3BcastInSubnetForSrcPort)));
 }
 //#endif
 
 
-//#if 0
+#if 0
 TEST_P(MultiHop, mstPassFail) {
 
     MockUart mock;
@@ -1845,7 +1848,7 @@ TEST_P(MultiHop, pduHopFrwd)
 
             PduHdr pduHdr = PduHdr{
                 .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU)},
-                .l3hdr = {l3SrcAddr, l3DstAddr, 1, 0},
+                .l3hdr = {l3SrcAddr, l3DstAddr, 2, 0},
                 .l4hdr = {0, 0, 0}};
 
             memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
@@ -1901,7 +1904,7 @@ TEST_P(MultiHop, pduHopFrwd)
 
                     PduHdr pduHdr = PduHdr{
                         .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU)},
-                        .l3hdr = {l3SrcAddr, l3DstAddr, 1, 0},
+                        .l3hdr = {l3SrcAddr, l3DstAddr, 2, 0},
                         .l4hdr = {0, 0, 0}};
 
                     memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
@@ -2045,7 +2048,7 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
 
             PduHdr pduHdr = PduHdr{
                 .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU)},
-                .l3hdr = {l3SrcAddr, l3DstAddr, 1, 0},
+                .l3hdr = {l3SrcAddr, l3DstAddr, 2, 0},
                 .l4hdr = {0, 0, 0}};
 
             memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
@@ -2255,7 +2258,7 @@ TEST_P(MultiHop, pduBrdCst) {
             pduHdr,
             false);
 
-        size = UNIT - (8 + sizeof(txOrder) + sizeof(MsgLenType)); // TODO check why expectTxMultiFrame above is not setting size properly?
+        size = UNIT - (8 + sizeof(txOrder) + sizeof(MsgLenType_t)); // TODO check why expectTxMultiFrame above is not setting size properly?
         //size += sizeof(txOrder) + sizeof(uint8_t);
         PITCallback(port + L2_PIT_TIMER_START_IDX); // interframe silence
 
@@ -2284,7 +2287,7 @@ TEST_P(MultiHop, pduBrdCst) {
 
     sendMstToken(mock, uart_ptrs[port], (l3AddrPrev & 0x00FF), port);
 
-    size = UNIT - (8 + sizeof(txOrder) + sizeof(MsgLenType)); // TODO check
+    size = UNIT - (8 + sizeof(txOrder) + sizeof(MsgLenType_t)); // TODO check
 
     expectTxMultiFrame(mock,
         uart_ptrs[port],
@@ -2300,7 +2303,7 @@ TEST_P(MultiHop, pduBrdCst) {
     /*confirm all pages are free */
     ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
 }
-//#endif
+#endif
 
 // route tables
 static constexpr std::array<uint16_t, MAX_SUBNET> makeL3RouteTablePos1()
@@ -2338,6 +2341,58 @@ static constexpr std::array<uint16_t, MAX_SUBNET> makeL3RouteTablePos7()
     std::array<uint16_t, MAX_SUBNET> a{};  // all zero
     a[2] = 0x0102; // gateway to subnet 2 for pos 7
     a[3] = 0x0101; // gateway to subnet 3 for pos 7
+    return a;
+}
+
+// route hops
+static constexpr std::array<uint8_t, MAX_SUBNET> makeL3RouteHopsPos1()
+{
+    std::array<uint8_t, MAX_SUBNET> a{}; // all zero
+    a.fill(255);
+    a[1] = 0x00;
+    a[2] = 0x01;                        // gateway to subnet 2 for pos 1
+    a[3] = 0x00;
+    return a;
+}
+
+static constexpr std::array<uint8_t, MAX_SUBNET> makeL3RouteHopsPos2()
+{
+    std::array<uint8_t, MAX_SUBNET> a{}; // all zero
+    a.fill(255);
+    a[1] = 0x01;                        // gateway to subnet 1 for pos 2
+    a[2] = 0x00;
+    a[3] = 0x00;
+    return a;
+}
+
+static constexpr std::array<uint8_t, MAX_SUBNET> makeL3RouteHopsPos3()
+{
+    std::array<uint8_t, MAX_SUBNET> a{}; // all zero
+    a.fill(255);
+    /* Todo does 3 need this gateway ? since it can reach all pos directly? */
+    a[1] = 0x00;
+    a[2] = 0x00;
+    a[3] = 0x01;
+    return a;
+}
+
+static constexpr std::array<uint8_t, MAX_SUBNET> makeL3RouteHopsPos5()
+{
+    std::array<uint8_t, MAX_SUBNET> a{}; // all zero
+    a.fill(255);
+    a[1] = 0x01;
+    a[2] = 0x00;                        
+    a[3] = 0x01;                        
+    return a;
+}
+
+static constexpr std::array<uint8_t, MAX_SUBNET> makeL3RouteHopsPos7()
+{
+    std::array<uint8_t, MAX_SUBNET> a{}; // all zero
+    a.fill(255);
+    a[1] = 0x00;
+    a[2] = 0x01;                        
+    a[3] = 0x01;                        
     return a;
 }
 
@@ -2458,11 +2513,11 @@ INSTANTIATE_TEST_SUITE_P(
     Runs, MultiHop,
     ::testing::Values(
       //     pos port1   port2
-      Case{ 1, l3AddrTblPrioPos1, makeL3RouteTablePos1(), l3BcastInSubnetForSrcPortPos1, {3, 2} },
-      Case{ 2, l3AddrTblPrioPos2, makeL3RouteTablePos2(), l3BcastInSubnetForSrcPortPos2, {3, 2} },
-      Case{ 3, l3AddrTblPrioPos3, makeL3RouteTablePos3(), l3BcastInSubnetForSrcPortPos3, {3, 3} },
-      Case{ 5, l3AddrTblPrioPos5, makeL3RouteTablePos5(), l3BcastInSubnetForSrcPortPos5, {3, 0} },
-      Case{ 7, l3AddrTblPrioPos7, makeL3RouteTablePos7(), l3BcastInSubnetForSrcPortPos7, {3, 0} }
+      Case{ 1, l3AddrTblPrioPos1, makeL3RouteTablePos1(), l3BcastInSubnetForSrcPortPos1, makeL3RouteHopsPos1(), {3, 2} },
+      Case{ 2, l3AddrTblPrioPos2, makeL3RouteTablePos2(), l3BcastInSubnetForSrcPortPos2, makeL3RouteHopsPos2(), {3, 2} },
+      Case{ 3, l3AddrTblPrioPos3, makeL3RouteTablePos3(), l3BcastInSubnetForSrcPortPos3, makeL3RouteHopsPos3(), {3, 3} },
+      Case{ 5, l3AddrTblPrioPos5, makeL3RouteTablePos5(), l3BcastInSubnetForSrcPortPos5, makeL3RouteHopsPos5(), {3, 0} },
+      Case{ 7, l3AddrTblPrioPos7, makeL3RouteTablePos7(), l3BcastInSubnetForSrcPortPos7, makeL3RouteHopsPos7(), {3, 0} }
     )
 );
 

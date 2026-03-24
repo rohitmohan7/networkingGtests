@@ -16,14 +16,20 @@
 #define MAX_L4_RETRY 3
 #define L4_RETRY_TIMEOUT 200
 
+typedef enum Protocol_et {
+    IP_PROTO_UNKOWN,
+    IP_PROTO_UDP,
+    IP_PROTO_TCP
+} Protocol_t;
+
 typedef uint16_t TxOrderType;
-typedef uint16_t MsgLenType;
+
 
 typedef struct __attribute__((packed)) {
     uint8_t msgNo;
     uint8_t msgFlgs;
     union {
-        MsgLenType msgLen;
+        uint16_t msgLen;
         PgPtrHd_t rxDesc;
     };
 } L4Hdr;
@@ -81,7 +87,7 @@ void l4Init();
 
 void l4Tick(uint8_t ms);
 
-void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio);
+void l4CmtRx(PgPtr_t *const pgPtr, const Protocol_t proto, MsgLenType_t msgLen);
 
 void l4CmtRxHd(L4Pkt *l4Pkt, const uint8_t pos, const uint8_t prio);
 
@@ -101,7 +107,7 @@ bool l4TxBrdcstStrmPnding(L4Hdr* l4Pkt);
 
 bool l4TxBrdcastStrmEmpty(PgPtr_t* pgPtr);
 
-bool l4StrmEmptyAftBrdcstFrme(const PgPtr_t* const pgPtr, const MsgLenType msgLen);
+bool l4StrmEmptyAftBrdcstFrme(const PgPtr_t* const pgPtr, const MsgLenType_t msgLen);
 
 TxOrderType l4GetStrmTxOrder(const uint8_t pos, const uint8_t prio);
 #endif

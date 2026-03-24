@@ -4,6 +4,7 @@
 #include "layer2.h"
 #include "network.h"
 #include "pit.h"
+#include "app.h"
 
 #define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
 #define L4_FRAME_SIZE (L3_FRAME_SIZE - sizeof(L4Hdr))
@@ -14,6 +15,13 @@
 stream_t streams[MAX_POS][MAX_PRIORITY];
 
 TxOrderType txOrder = 0;
+
+typedef struct __attribute__((packed)) {
+	MsgLenType_t msgLen;
+	//PosType_t srcPort; //  TODO is this needed ?
+	PosType_t dstPort; // port is pos
+	// uint16_t checksum; // TODO is this needed ?
+} UdpHdr;
 
 void l4Init() {
 	
@@ -221,7 +229,7 @@ void l4TxCmplt(L4Pkt* l4Pkt, uint8_t prio) {
 	 }
 }
 
-static inline bool l4StrmEmptyAftFrme(const PgPtr_t* const pgPtr, const MsgLenType msgLen) {
+static inline bool l4StrmEmptyAftFrme(const PgPtr_t* const pgPtr, const MsgLenType_t msgLen) {
 	/* make a copy of pgPtr */
 	PgPtr_t pgPtrCpy = *pgPtr;
 
@@ -231,7 +239,7 @@ static inline bool l4StrmEmptyAftFrme(const PgPtr_t* const pgPtr, const MsgLenTy
 	return pgPtrCpy.hdPg == INVALID_PAGE; // these is still message after this frame or msglen
 }
 
-bool l4StrmEmptyAftBrdcstFrme(const PgPtr_t* const pgPtr, const MsgLenType msgLen) {
+bool l4StrmEmptyAftBrdcstFrme(const PgPtr_t* const pgPtr, const MsgLenType_t msgLen) {
 	return l4StrmEmptyAftFrme(pgPtr, msgLen);
 }
 
@@ -327,7 +335,7 @@ void writeValToPage(PgPtr_t * pgPtr, uint8_t *val, uint8_t len)
 
 void l4SndAck(stream_t *const s)
 {
-	MsgLenType len = 0;
+	MsgLenType_t len = 0;
 	uint8_t msgFlgs = L4_MSG_FLAG_TYPE_ACK;
 	PgPtr_t* pgPtr = &s->txPgPtr;
 	if (pgPtr->tlPg != INVALID_PAGE)
@@ -342,7 +350,33 @@ void l4SndAck(stream_t *const s)
 	}
 }
 
-void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio) { // recieved a frame
+#define MAX_UDP_DATAGRAM_SIZE 1000
+
+void l4CmtRx(PgPtr_t* const pgPtr, const Protocol_t proto, MsgLenType_t msgLen) { // recieved a frame
+
+	switch (proto) {
+	case IP_PROTO_UDP:
+		if (msgLen > sizeof(UdpHdr)) {
+			msgLen -= sizeof(UdpHdr);
+			if (msgLen <= MAX_UDP_DATAGRAM_SIZE) {
+				/* first read udp header */
+				UdpHdr udpHdr;
+				readFromPgs(pgPtr, (uint8_t*)&udpHdr, sizeof(UdpHdr));
+
+				if (udpHdr.msgLen == msgLen) {
+					uint8_t udpData[MAX_UDP_DATAGRAM_SIZE];
+					readFromPgs(pgPtr, udpData, msgLen);
+					appRecv(udpHdr.dstPort, udpData, msgLen);
+				}
+			}
+		}
+		freePgPtr(pgPtr);
+		break;
+	default:
+		break;
+	}
+
+#if 0
 	L4Hdr *l4Hdr = &l4Pkt->hdr;
 	// identify the stream
 	stream_t *const s = &streams[l4Pkt->pos][prio];
@@ -368,6 +402,7 @@ void l4CmtRx(L4Pkt *l4Pkt, const uint8_t prio) { // recieved a frame
 	}
 	
 	s->rxMsgHdr.rxDesc.hd = INVALID_PAGE;
+#endif
 }
 
 uint8_t getL4RxPktFrag(L4Pkt *l4Pkt, uint8_t **ptr, uint8_t rxLen, uint8_t prio)

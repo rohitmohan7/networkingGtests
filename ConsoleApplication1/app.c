@@ -1,9 +1,9 @@
 ﻿#include "app.h"
-#include "allocator.h"
 #include "layer4.h"
 #include "layer3.h"
 
-bool appBrdcast(const uint8_t* data, MsgLenType len, uint8_t priority) {
+
+bool appBrdcast(const uint8_t* data, MsgLenType_t len, uint8_t priority) {
     return l3TxBrdcstMsg(data, len, priority);
 }
 
@@ -99,8 +99,7 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, 
     return true;
 }
 
-bool appRecv(uint16_t pos, uint8_t priority) { // TODO
-    stream_t *s = &streams[pos][priority];
+void appRecv(uint16_t pos, const uint8_t * const data, MsgLenType_t len) { // TODO
     
     //uint8_t msgType = ; 
 }

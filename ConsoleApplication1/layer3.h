@@ -5,22 +5,30 @@
 
 #define MAX_SUBNET 256
 
+typedef uint8_t FragIdType_t;
 typedef struct __attribute__((packed)) {
 	uint16_t src;
 	uint16_t dst;
+	FragIdType_t fragId;
+	Protocol_t proto;
 	uint8_t ttl;
 	uint8_t prio;
+	uint16_t fragOfst;
 } L3Hdr;
 
 typedef struct __attribute__((packed)) {
+  uint8_t data[sizeof(L4Hdr)]; // first 4 data of frwd pkt not neccesarily l4 hdr
   uint8_t dstPort;
 } L3FrwdPkt;
+
+typedef struct IpReassQueue_st IpReassQueue_t;
 
 typedef struct __attribute__((packed)) {
 	L3Hdr hdr;
 	union {
 		L3FrwdPkt frwdPkt;
 		L4Pkt l4Pkt;
+		IpReassQueue_t * ipReassQueue; // for ip rx
 	};
 } L3Pkt;
 
@@ -48,13 +56,13 @@ uint8_t getL3PktFrag(L3Pkt* l3Pkt, uint8_t** ptr, uint8_t idx, uint8_t* txHd, ui
 
 bool getL3PktHd(L3Pkt *l3Pkt, uint8_t *hd, uint8_t *ofst, uint8_t port);
 
-void l3CmtRx(L3Pkt *l3Pkt, const uint8_t port);
+void l3CmtRx(L3Pkt *const l3Pkt, const uint8_t port, uint8_t l3RxLen);
 
 bool l3CmtRxHd(L3Pkt *l3Pkt, const uint8_t port);
 
 uint8_t getL3RxPktFrag(uint8_t port, L3Pkt *l3Pkt, uint8_t **ptr, uint8_t rxLen);
 
-bool l3TxBrdcstMsg(const uint8_t* data, MsgLenType len, uint8_t priority);
+bool l3TxBrdcstMsg(const uint8_t* data, MsgLenType_t len, uint8_t priority);
 
 uint8_t l3GetRxPktHdrSize(L3Pkt *l3Pkt, uint8_t port);
 

@@ -24,10 +24,10 @@ typedef struct
 	uint32_t dstIp;
 	FragIdType_t id;
 	Protocol_t proto;
-} IpFragKey_t;
+} IpReassKey_t;
 
 typedef struct IpReassQueue_st {
-	IpFragKey_t key;
+	IpReassKey_t key;
 	uint32_t expireTick;
 	PgPtr_t pgPtr;
 	PgPtr_t rxPgPtr;
@@ -752,7 +752,7 @@ uint8_t getL3RxPktFrag(uint8_t port, L3Pkt *l3Pkt, uint8_t **ptr, uint8_t rxLen)
 	}
 #endif
 	uint8_t len;
-	*ptr = getPgPtr(l3Pkt->ipReassQueue.rxPgPtr, &len, rxLen);
+	*ptr = getPgPtr(l3Pkt->ipReassQueue->rxPgPtr, &len, rxLen);
 	return len;
 	//return getL4RxPktFrag(&l3Pkt->l4Pkt, ptr, rxLen, l3Hdr->prio);
 }
@@ -806,7 +806,7 @@ static inline IpReassQueue_t * ipReassAllocQueue(const L3Hdr * hdr)
     {
 		if (g_ipReass[i].key.proto == IP_PROTO_UNKOWN)
 		{
-			memcpy(&g_ipReass[i].key, hdr, sizeof(IpFragKey_t));	/* make sure hdr first bytes is key */		
+			memcpy(&g_ipReass[i].key, hdr, sizeof(IpReassKey_t));	/* make sure hdr first bytes is key */
 			g_ipReass[i].expireTick = pitGetCurrMS() + IP_REASS_TIMEOUT_TICKS;
 			return &g_ipReass[i];
         }

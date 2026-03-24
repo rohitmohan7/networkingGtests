@@ -572,12 +572,14 @@ void sendPduMsg(MockUart &mock,
 #define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
 #define L4_FRAME_SIZE (L3_FRAME_SIZE - sizeof(L4Hdr))
 
-L2Crc_t expectHdr(MockUart &mock, UART_Type *UART, const PduHdr &pduHdr, const uint8_t &port, const bool &echo, const L2Crc_t expectCrcIn = 0)
+L2Crc_t expectHdr(MockUart &mock, UART_Type *UART, const PduHdr &pduHdr, const uint8_t &port, const bool &echo, const bool & forward = false, const L2Crc_t expectCrcIn = 0)
 {
+    uint8_t hdrSize = forward ? sizeof(L2Hdr) + sizeof(L3Hdr) : sizeof(PduHdr);
     if (!echo) {
         L2Crc_t expectCrc = crcTestContinous(0x00, (uint8_t *)&pduHdr, sizeof(pduHdr));
+        
 
-        EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), sizeof(PduHdr), testing::NotNull()))
+        EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), hdrSize, testing::NotNull()))
             .Times(1)
             .WillOnce(testing::Invoke([pduHdr, expectCrc](UART_Type *UART, const uint8_t *data, size_t len, L2Crc_t *crc)
                                       { 
@@ -590,7 +592,7 @@ L2Crc_t expectHdr(MockUart &mock, UART_Type *UART, const PduHdr &pduHdr, const u
         return expectCrc;
     }
     else {
-        EXPECT_CALL(mock, l1UARTCmpNonBlocking(UART, testing::NotNull(), sizeof(PduHdr)))
+        EXPECT_CALL(mock, l1UARTCmpNonBlocking(UART, testing::NotNull(), hdrSize))
             .Times(1)
             .WillOnce(testing::Invoke([pduHdr](UART_Type* UART, const uint8_t* data, size_t len) {
             EXPECT_EQ(0, std::memcmp(data, (uint8_t*)&pduHdr, len));
@@ -599,7 +601,7 @@ L2Crc_t expectHdr(MockUart &mock, UART_Type *UART, const PduHdr &pduHdr, const u
             .RetiresOnSaturation();
 
         UART->S1 |= UART_S1_RDRF_MASK;
-        UART->RCFIFO = sizeof(PduHdr);
+        UART->RCFIFO = hdrSize;
         
          /* if CRC is provided this is a hdr only message */
         if (expectCrcIn)
@@ -684,7 +686,7 @@ void expectHdrMsg(MockUart &mock, UART_Type *UART, const PduHdr &pduHdr, const u
     // confirm UART TX is disabled
     ASSERT_NE((UART->C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
 
-    expectHdr(mock, UART, pduHdr, port, true, expectCrc);
+    expectHdr(mock, UART, pduHdr, port, true, false, expectCrc);
 }
 
 enum class TxMultiFrameType {
@@ -969,9 +971,9 @@ void expectFrwdFrame(MockUart &mock,
        // expect header
         // expect header
         if (!echo) {
-            expectCrc = expectHdr(mock, UART, hdr, port, echo);
+            expectCrc = expectHdr(mock, UART, hdr, port, echo, true);
         } else {
-            expectHdr(mock, UART, hdr, port, echo);
+            expectHdr(mock, UART, hdr, port, echo, true);
         }
     }
 
@@ -2059,7 +2061,7 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
 
             // send msg to port 1
             sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
-                       msg.size(), port);
+                       msg.size(), port, true);
 
             // send MST to port 2
             sendMstToken(mock, uart_ptrs[port2], l2Addr2, port2);
@@ -2074,14 +2076,16 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
 
             uint8_t size;
 
+            /* TODO L4 Hdr */
+
             expectFrwdFrame(mock,
                             uart_ptrs[port2],
                             port2,
                             idx[port2],
                             size,
                             TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-                            (msg.data() + (sizeof(PduHdr))),
-                            (MSG_SIZE - (sizeof(PduHdr))), /* L4 hdr is part of page buffer */
+                            (msg.data() + (sizeof(L3Hdr) + sizeof(L2Hdr))),
+                            (MSG_SIZE - (sizeof(L3Hdr) + sizeof(L2Hdr))), /* L4 hdr is part of page buffer */
                             pduHdr);
         }
     }

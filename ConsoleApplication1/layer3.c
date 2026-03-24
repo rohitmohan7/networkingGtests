@@ -90,7 +90,6 @@ static inline void l3FrwdQInit(void)
 			for (uint8_t queueIdx = 0; queueIdx < MAX_FORWARD_QUEUE; queueIdx++)
 			{
 				pgPtrInit(&l3FrwdPgPtrQ[port][prio][queueIdx]);
-				memset(l3FrwdQ[MAX_PORT][MAX_PRIORITY][MAX_FORWARD_QUEUE].frwdPkt.data, 0, sizeof(L4Pkt));
 			}
 		}
 	}
@@ -198,7 +197,7 @@ static inline PgPtr_t * l3PushFrwdPkt(L3Pkt *const l3Pkt, const uint8_t port)
 	L3Pkt *l3FrwdPkt = &l3FrwdQ[port][prio][frwdQIdx];
 	
 	/* Copy the header */
-	memcpy(l3FrwdPkt, l3Pkt, sizeof(L3Hdr) + sizeof(L4Hdr));
+	memcpy(l3FrwdPkt, l3Pkt, sizeof(L3Hdr));
 
 	l3FrwdQTail[port][prio] = (uint8_t)((l3FrwdQTail[port][prio] + 1u) % MAX_FORWARD_QUEUE);
 	l3FrwdQCount[port][prio]++;
@@ -236,29 +235,29 @@ static inline void l3BrdCst(const uint8_t port, L3Pkt *const l3Pkt)
 uint8_t l3GetTxPktHdrSize(L3Pkt *l3Pkt, uint8_t port)
 {
 	L3Hdr *l3Hdr = &l3Pkt->hdr;
-//#if 0
+	uint8_t ret = sizeof(L3Hdr);
+
 #if MAX_PORT > 1
-	if (l3TxfrwdPkt(l3Hdr, port))
-	{
-		return sizeof(L3Hdr);
+	if (!l3TxfrwdPkt(l3Hdr, port)) {
+		ret = sizeof(L3Hdr) + sizeof(L4Hdr);
 	}
 #endif
-//#endif
-	return sizeof(L3Hdr) + sizeof(L4Hdr);
+	return ret;
 }
 
 uint8_t l3GetRxPktHdrSize(L3Pkt *l3Pkt, uint8_t port)
 {
 	L3Hdr *l3Hdr = &l3Pkt->hdr;
-//#if 0
+	uint8_t ret = sizeof(L3Hdr);
+	if (
 #if MAX_PORT > 1
-	if (l3RxfrwdPkt(l3Hdr, port))
-	{
-		return sizeof(L3Hdr); // forward packet
-	}
+		!l3RxfrwdPkt(l3Hdr, port) &&
 #endif
-//#endif
-	return sizeof(L3Hdr) + sizeof(L4Hdr);
+		!l3TxBrdcstPkt(l3Hdr)
+		) {
+		ret = sizeof(L3Hdr) + sizeof(L4Hdr);
+	}
+	return ret;
 }
 
 bool l3TxBrdcstMsg(const uint8_t* data, MsgLenType len, uint8_t priority) {
@@ -576,7 +575,7 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 			/* Copy the header */
 			const uint8_t frwdQHd = l3FrwdQHead[port][prio];
 			L3Pkt *l3FrwdPkt = &l3FrwdQ[port][prio][frwdQHd];
-			memcpy(l3Pkt, l3FrwdPkt, (sizeof(L3Hdr) + sizeof(L4Hdr)));
+			memcpy(l3Pkt, l3FrwdPkt, sizeof(L3Hdr));
 			const uint8_t dstSubnet = l3Pkt->hdr.dst >> 8;
 			const uint8_t gateway = l3RouteTable[dstSubnet];
 			*l2Addr = (gateway) ? gateway : l3Pkt->hdr.dst; /* if dst subnet is distant it will have gateway in route table */

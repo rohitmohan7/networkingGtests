@@ -2,7 +2,7 @@
 #define NETWORK_ALLOCATOR__
 
 #include <stdint.h>
-
+#include <stdbool.h>
 
 #define POOL_BYTES   (10240U) // 1K
 #define UNIT         (64U)    // 64 bytes
@@ -42,13 +42,14 @@ uint16_t pageOff(uint8_t p);
 void page_free(uint8_t p);
 uint8_t *getPgPtr(PgPtr_t *pgPtr, uint8_t *len, uint8_t reqLen);
 
-static inline uint8_t min(uint8_t a, uint8_t b) { return (a < b) ? a : b; }
+static inline uint16_t min(uint16_t a, uint16_t b) { return (a < b) ? a : b; }
 void freePgPtr(PgPtr_t *pgPtr);
 void pgPtrInit(PgPtr_t * const pgPtr);
 void addUser(PgPtr_t *pgPtr);
 uint8_t getPgUsers(uint8_t pg);
 void freePgPtrHd(PgPtrHd_t* pgPtrHd, uint8_t len);
-void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint8_t size);
-void freePgPtrLen(PgPtr_t* pgPtr, uint8_t len);
-void advancePgPtrLen(PgPtr_t* pgPtr, uint8_t len);
+void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint16_t size);
+uint16_t  freePgPtrLen(PgPtr_t* pgPtr, uint16_t len);
+uint16_t  advancePgPtrLen(PgPtr_t* pgPtr, uint16_t len);
+bool allocPgPtr(PgPtr_t* pgPtr, uint16_t len);
 #endif

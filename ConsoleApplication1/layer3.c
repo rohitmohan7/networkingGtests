@@ -14,10 +14,16 @@
 #define IP_REASS_MAX_BLOCKS       ((IP_REASS_MAX_LEN + IP_REASS_BLOCK_SIZE - 1U) / IP_REASS_BLOCK_SIZE)
 #define IP_REASS_BITMAP_BYTES     ((IP_REASS_MAX_BLOCKS + 7U) / 8U)
 
-#define IP_MORE_FRAG_MASK 0x2000
+#define IP_MORE_FRAG_MASK 0x2000U
+#define IP_IHL_WORDS_MASK 0x0FU
 
-uint16_t l3AddrTblPrio[MAX_POS][MAX_PORT]; // pos addresses ordered by tx priority
-uint16_t l3RouteTable[MAX_SUBNET]; // next best gateway for subnet
+#define IPV4_VERSION 4
+#define IPV4_VERSION_SHIFT 4
+#define IPV4_VERSION_MASK 0xF0
+#define IPV4_WORD_MASK 0x0FU
+
+IpAddrType_t l3AddrTblPrio[MAX_POS][MAX_PORT]; // pos addresses ordered by tx priority
+IpAddrType_t l3RouteTable[MAX_SUBNET]; // next best gateway for subnet
 uint8_t l3BcastInSubnetForSrcPort[MAX_POS][MAX_PORT];
 uint8_t l3RouteHops[MAX_SUBNET]; // l3 hop table for my pos
 
@@ -39,7 +45,7 @@ typedef struct IpReassQueue_st {
 	uint16_t maxLen;
 	uint16_t rxLen;
 	uint8_t  blockMap[IP_REASS_BITMAP_BYTES];
-	bool used;
+	//bool used;
 } IpReassQueue_t;
 
 #define IP_MAX_REASS_QUEUES 10
@@ -376,7 +382,14 @@ static inline void l3InitIpReassQ(IpReassQueue_t * const q) {
 	memset(&q->key, 0, sizeof(q->key));
 	pgPtrInit(&q->pgPtr);
 	q->rxLen = q->maxLen = 0;
-	q->used = false; // maybe can be removed?
+	memset(&q->blockMap, 0x00, sizeof(q->blockMap));
+}
+
+static inline void l3ReleaseIpReassQ(IpReassQueue_t* const q) {
+	if (q) {
+		freePgPtr(&q->pgPtr);
+		l3InitIpReassQ(q);
+	}
 }
 
 void l3Init(void) {
@@ -720,9 +733,9 @@ uint8_t getL3PktFrag(L3Pkt* const l3Pkt, uint8_t** ptr, uint8_t idx, uint8_t * t
 	return getL4PktFrag(&l3Pkt->l4Pkt, ptr, idx, txHd, txHdOfst, txLen, l3Hdr->prio);
 }
 
-static inline bool l3CmtL4RxHd(L3Pkt *l3Pkt)
+static inline bool l3CmtL4RxHd(L3Pkt* l3Pkt)
 {
-	L3Hdr *l3Hdr = &l3Pkt->hdr;
+	L3Hdr* l3Hdr = &l3Pkt->hdr;
 	const uint8_t prio = l3Hdr->prio;
 
 	for (uint16_t pos = 0; pos < MAX_POS; pos++)
@@ -740,9 +753,9 @@ static inline bool l3CmtL4RxHd(L3Pkt *l3Pkt)
 	return false;
 }
 
-uint8_t getL3RxPktFrag(uint8_t port, L3Pkt *l3Pkt, uint8_t **ptr, uint8_t rxLen)
+uint8_t getL3RxPktFrag(uint8_t port, L3Pkt* l3Pkt, uint8_t** ptr, uint8_t rxLen)
 {
-	L3Hdr *l3Hdr = &l3Pkt->hdr;
+	L3Hdr* l3Hdr = &l3Pkt->hdr;
 
 #if MAX_PORT > 1
 	if (l3RxfrwdPkt(l3Hdr, port)) {
@@ -763,51 +776,113 @@ uint8_t getL3RxPktFrag(uint8_t port, L3Pkt *l3Pkt, uint8_t **ptr, uint8_t rxLen)
 	//return getL4RxPktFrag(&l3Pkt->l4Pkt, ptr, rxLen, l3Hdr->prio);
 }
 
-static inline bool ipReassKeyEqual(const IpReassKey_t * key, const L3Hdr * hdr)
+static inline bool ipReassKeyEqual(const IpReassKey_t* key, const L3Hdr* hdr)
 {
 	return (key->src == hdr->src) &&
-		   (key->dst == hdr->dst) &&
-		   (key->id == hdr->fragId) &&
-		   (key->proto == hdr->proto);
+		(key->dst == hdr->dst) &&
+		(key->id == hdr->fragId) &&
+		(key->proto == hdr->proto);
 }
 
-static bool ipReassLoadRxPgPTr(IpReassQueue_t *const ipReassObj, const uint16_t fragOfst)
+
+static bool ipReassLoadRxPgPTr(IpReassQueue_t* const ipReassObj, const uint16_t fragOfst)
 {
 	/* Todo check if there is enough pages else fail early */
 	/* set up to frag idx */
-	uint16_t fragIdx = (fragOfst & 0x1FFF);
+	uint16_t fragIdx = (uint16_t)((fragOfst & 0x1FFFU) << 3);
 
 	if (ipReassObj->pgPtr.hdPg == INVALID_PAGE) {
-		while (fragIdx) { /* allocate until fragidx */
-			uint8_t len;
-			getPgPtr(&ipReassObj->pgPtr, &len, fragIdx);
-			fragIdx -= len;
+		if (!allocPgPtr(&ipReassObj->pgPtr, fragIdx)) {
+			return false;
 		}
 		/* set the rx */
-		memcpy(&ipReassObj->rxPgPtr, &ipReassObj->pgPtr.tlPg , sizeof(PgPtrTl_t));
+		memcpy(&ipReassObj->rxPgPtr, &ipReassObj->pgPtr.tlPg, sizeof(PgPtrTl_t));
 		memcpy(&ipReassObj->rxPgPtr.tlPg, &ipReassObj->pgPtr.tlPg, sizeof(PgPtrTl_t));
-	} else {
-		memset(&ipReassObj->rxPgPtr, &ipReassObj->pgPtr, sizeof(PgPtr_t));
-		advancePgPtrLen(&ipReassObj->rxPgPtr, fragIdx); // advance to frame idx
+	}
+	else {
+		//memcpy(&ipReassObj->rxPgPtr, &ipReassObj->pgPtr, sizeof(PgPtr_t));
+		uint16_t moveDist = advancePgPtrLen(&ipReassObj->rxPgPtr, fragIdx); // advance to frame idx
+
+		if (fragIdx > moveDist) {
+			fragIdx -= moveDist;
+			if (!allocPgPtr(&ipReassObj->rxPgPtr, fragIdx)) {
+				return false;
+			}
+		}
 	}
 	return true;
 }
 
-static inline bool ipReassHdrValid(const L3Hdr* const l3Hdr) {
-	bool moreFragments = l3Hdr->fragOfst & IP_MORE_FRAG_MASK;
+static inline bool ipReassBitGet(const uint8_t* map, uint16_t blockIdx) {
+	return (map[blockIdx >> 3] & (uint8_t)(1U << (blockIdx & 0x7U))) != 0U;
+}
 
-	uint8_t ihlWords = (uint8_t)(l3Hdr->verIhl & 0x0FU);
+static inline void ipReassBitSet(uint8_t* map, uint16_t blockIdx) {
+	map[blockIdx >> 3] |= (uint8_t)(1U << (blockIdx & 0x7U));
+}
 
-	/* validate max len */
-	if (!moreFragments) {
-		uint16_t fragIdx = (uint16_t)((l3Hdr->fragOfst & 0x1FFFU) * 8U);
-		uint16_t msgLen = fragIdx + (l3Hdr->totalLen - l3Hdr->ihl);
-		if (msgLen > IP_REASS_MAX_LEN) {
+static inline uint16_t getIpv4HdrLen(const L3Hdr* const l3Hdr) {
+	const uint8_t ihlWords = (uint8_t)(l3Hdr->verIhl & IPV4_WORD_MASK);
+	const uint16_t hdrLenBytes = (uint16_t)ihlWords << 2;
+	return hdrLenBytes;
+}
+
+static inline bool ipReassHdrValid(const L3Hdr* const l3Hdr, IpReassQueue_t* const ipReassQueue) {
+	const uint8_t ipvVer = (l3Hdr->verIhl & IPV4_VERSION_MASK) >> IPV4_VERSION_SHIFT;
+
+	if (ipvVer == IPV4_VERSION) {
+		const uint16_t hdrLenBytes = getIpv4HdrLen(l3Hdr);
+
+		if ((l3Hdr->totalLen < hdrLenBytes) ||
+			(hdrLenBytes < IPV4_HDR_MIN_LEN) ||
+			(hdrLenBytes > IPV4_HDR_MAX_LEN)) {
 			return false;
 		}
+
+		const uint16_t payloadLen = (l3Hdr->totalLen - hdrLenBytes);
+
+		// TODO future: Hdr Checksum validation ?, ipv6 has no header checksum validation
+
+		if (payloadLen) {
+			bool moreFragments = l3Hdr->fragOfst & IP_MORE_FRAG_MASK;
+			const uint16_t startByte = (uint16_t)((l3Hdr->fragOfst & 0x1FFFU) << 3);
+			/* Use wider arithmetic for validation */
+			const uint32_t endByte = (uint32_t)startByte + (uint32_t)payloadLen;
+			if (endByte > IP_REASS_MAX_LEN) {
+				/* if there is a q clear it */
+				l3ReleaseIpReassQ(ipReassQueue);
+				return false;
+			}
+
+			if (moreFragments && (payloadLen & 0x7U) != 0U) {
+				/* in ipv4 every fragment except the last need to be a multiple of 8 bytes RFC 791 */
+				// TODO drop whole q?
+				return false;
+			}
+
+			/* check for overlap/dupe */
+			if (ipReassQueue) {
+				const uint16_t startBlk = (uint16_t)(startByte >> 3);
+				const uint16_t endBlk = (uint16_t)((endByte - 1U) >> 3);
+
+				for (uint16_t blk = startBlk; blk <= endBlk; blk++) {
+					if (ipReassBitGet(ipReassQueue->blockMap, blk)) {
+						/* TODO future: secure IP will drop entire q (linux behaviour) for overlap (dupes are dropped but q is kept), 
+							but for now this network is assumed to be secure so no need to verify if overlap and drop q */
+						return false; // dupe/overlap packet
+					}
+				}
+			}
+		} else {
+			/* TODO Hdr messages should be processed directly here in l3*/
+			return false;
+		}
+	} else {
+		/* TODO future: ipv6 */
+		return false;
 	}
 
-
+	return true;
 }
 
 static inline IpReassQueue_t * ipReassFindQueue(const L3Hdr * hdr)
@@ -853,6 +928,10 @@ bool l3CmtRxHd(L3Pkt *l3Pkt, const uint8_t port) { // called from L2
 	}
 
 	IpReassQueue_t *q = ipReassFindQueue(l3Hdr);
+
+	if (!ipReassHdrValid(l3Hdr, q)) {
+		return false;
+	}
 
 	if (!q) {
 		q = ipReassAllocQueue(l3Hdr);
@@ -953,18 +1032,33 @@ void l3CmtRx(L3Pkt * const l3Pkt, const uint8_t port, uint8_t l3RxLen)
 #endif
 	IpReassQueue_t *q = l3Pkt->ipReassQueue;
 	bool moreFragments = l3Hdr->fragOfst & IP_MORE_FRAG_MASK;
-	l3RxLen -= sizeof(L3Hdr);
-	q->rxLen += l3RxLen;
+	const uint16_t payloadLen = (l3Hdr->totalLen - getIpv4HdrLen(l3Hdr));
+	q->rxLen += payloadLen;
+	const uint16_t startByte = (uint16_t)((l3Hdr->fragOfst & 0x1FFFU) << 3);
+	const uint32_t endByte = (uint32_t)startByte + (uint32_t)payloadLen;
 	
 	if (!moreFragments) { // this is the last frag
 		// set max len
-		uint16_t fragIdx = (l3Hdr->fragOfst & 0x1FFF);
-		q->maxLen = fragIdx + l3RxLen;
+		q->maxLen = endByte;
+	}
+
+	/* update page ptr */
+	if (q->pgPtr.hdPg == INVALID_PAGE) {
+		memcpy(&q->pgPtr, &q->rxPgPtr, sizeof(PgPtr_t));
+	} else { // just extend the tail
+		memcpy(&q->pgPtr.tlPg, &q->rxPgPtr.tlPg, sizeof(PgPtrTl_t));
 	}
 
 	if (q->maxLen == q->rxLen) {
 		l4CmtRx(&q->pgPtr, q->key.proto, q->maxLen);
-		l3InitIpReassQ(q); // release the q
+		l3InitIpReassQ(q); // release the q without clearing pgPtr (l4 might still use it ...)
+	} else {
+		/* set block map */
+		uint16_t  startBlk = (uint16_t)(startByte / 8U);
+		uint16_t  endBlk = (uint16_t)((endByte - 1U) / 8U);
+		for (uint16_t blk = startBlk; blk <= endBlk; blk++) {
+			ipReassBitSet(q->blockMap, blk);
+		}
 	}
 	//l4CmtRx(&l3Pkt->l4Pkt, l3Hdr->prio);
 }

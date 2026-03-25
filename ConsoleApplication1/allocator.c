@@ -1,5 +1,6 @@
 ﻿#include "allocator.h"
 #include <stdbool.h>
+#include <stddef.h>
 
 uint8_t g_next[NUM_PAGES];
 uint8_t   g_pool[POOL_BYTES];
@@ -47,25 +48,32 @@ uint8_t ceilPages(uint8_t len)
     return ((len + (UNIT - 1U)) / UNIT);
 }
 
-uint8_t *getPgPtr(PgPtr_t *pgPtr, uint8_t *len, uint8_t reqLen)
+uint8_t * getPgPtr(PgPtr_t *pgPtr, uint8_t *len, uint8_t reqLen)
 {
     uint8_t *ptr;
-    *len = UNIT;
 
     if (pgPtr->hdPg == INVALID_PAGE)
     {
         pgPtr->hdPg = pgPtr->tlPg = page_alloc();
+        if (pgPtr->hdPg == INVALID_PAGE) {
+            *len = 0;
+            return NULL; /* failed to allocate */
+        }
         const uint16_t base = pageOff(pgPtr->hdPg);
         ptr = &g_pool[base];
-        pgPtr->tlUsd = min(reqLen, UNIT);
+        *len = pgPtr->tlUsd = min(reqLen, UNIT);
     }
     else if (pgPtr->tlUsd == UNIT) // need new page
     {
         uint8_t pg = page_alloc();
+        if (pg == INVALID_PAGE) {
+            *len = 0;
+            return NULL; /* failed to allocate */
+        }
         g_next[pgPtr->tlPg] = pg;
         pgPtr->tlPg = pg;
         ptr = &g_pool[pageOff(pgPtr->tlPg)];
-        pgPtr->tlUsd = min(reqLen, UNIT);
+        *len = pgPtr->tlUsd = min(reqLen, UNIT);
     }
     else
     { // some tail is used
@@ -90,10 +98,17 @@ void freePgPtr(PgPtr_t * pgPtr)
     pgPtr->tlUsd = pgPtr->hdOfst = 0;
 }
 
-static inline void movePgPtr(PgPtr_t* pgPtr, uint8_t len, bool free) {
+static inline uint16_t movePgPtr(PgPtr_t* pgPtr, uint16_t len, bool free) {
+    uint16_t origLen = len;
     while (len)
     {
         uint8_t take = min(len, (UNIT - pgPtr->hdOfst));
+
+        if (pgPtr->hdPg == pgPtr->tlPg) {
+            /* cap take to tail used */
+            take = pgPtr->tlUsd -= pgPtr->hdOfst;
+        }
+
         len -= take;
         pgPtr->hdOfst += take;
 
@@ -101,11 +116,11 @@ static inline void movePgPtr(PgPtr_t* pgPtr, uint8_t len, bool free) {
             (pgPtr->hdOfst >= pgPtr->tlUsd)) {
             if (free) {
                 freePgPtr(pgPtr);
-            } else {
+            } /*else {
                 pgPtr->tlPg = pgPtr->hdPg = INVALID_PAGE;
                 pgPtr->tlUsd = pgPtr->hdOfst = 0;
-            }
-            break;
+            }*/
+            return (origLen - len);
         }
         else if (pgPtr->hdOfst == UNIT) {
             /* free and advance head */
@@ -116,20 +131,21 @@ static inline void movePgPtr(PgPtr_t* pgPtr, uint8_t len, bool free) {
             }
             if (pgPtr->hdPg == INVALID_PAGE) {
                 pgPtr->tlPg == INVALID_PAGE;
-                break;
+                return (origLen - len);
             }
 
             pgPtr->hdOfst = 0;
         }
     }
+    return origLen;
 }
 
-void freePgPtrLen(PgPtr_t* pgPtr, uint8_t len) {
-    movePgPtr(pgPtr, len, true);
+uint16_t freePgPtrLen(PgPtr_t* pgPtr, uint16_t len) {
+    return movePgPtr(pgPtr, len, true);
 }
 
-void advancePgPtrLen(PgPtr_t* pgPtr, uint8_t len) {
-    movePgPtr(pgPtr, len, false);
+uint16_t advancePgPtrLen(PgPtr_t* pgPtr, uint16_t len) {
+    return movePgPtr(pgPtr, len, false);
 }
 
 void freePgPtrHd(PgPtrHd_t * pgPtrHd, uint8_t len) {
@@ -181,7 +197,7 @@ uint8_t getPgUsers(uint8_t pg) {
     return g_users[pg];
 }
 
-void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint8_t size) {
+void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint16_t size) {
     for (int i = 0; i < size; i++) {
         if (pgPtr->hdPg == INVALID_PAGE ||
             (pgPtr->hdPg == pgPtr->tlPg && pgPtr->hdOfst == pgPtr->tlUsd)) { // TODO deterministic fail
@@ -190,7 +206,8 @@ void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint8_t size) {
         }
 
         uint16_t base = pageOff(pgPtr->hdPg) + (pgPtr->hdOfst);
-        val[i] = (g_pool[base]) << (8 * i);
+        //val[i] = (g_pool[base]) << (8 * i);
+        val[i] = g_pool[base];
         pgPtr->hdOfst++;
         if (pgPtr->hdOfst == UNIT) {
             uint8_t currPage = pgPtr->hdPg;
@@ -200,3 +217,15 @@ void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint8_t size) {
         }
     }
 }
+
+bool allocPgPtr(PgPtr_t* pgPtr, uint16_t len) {
+    while (len) {
+        uint8_t pgLen;
+        if (!getPgPtr(pgPtr, &pgLen, len)) {
+            return false;
+        }
+        len -= pgLen;
+    }
+    return true;
+}
+

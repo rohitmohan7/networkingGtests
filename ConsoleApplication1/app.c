@@ -99,7 +99,11 @@ bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, 
     return true;
 }
 
-void appRecv(uint16_t pos, const uint8_t * const data, MsgLenType_t len) { // TODO
+#ifdef NETWORK_ISR_RECV
+#ifndef UNIT_TEST
+void appRecv(uint16_t pos, const uint8_t * const data, uint16_t len) { // TODO
     
     //uint8_t msgType = ; 
 }
+#endif
+#endif

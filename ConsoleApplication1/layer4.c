@@ -356,10 +356,13 @@ void l4CmtRx(PgPtr_t* const pgPtr, const Protocol_t proto, MsgLenType_t msgLen) 
 				UdpHdr_t udpHdr;
 				readFromPgs(pgPtr, (uint8_t*)&udpHdr, sizeof(UdpHdr_t));
 
-				if (udpHdr.msgLen == msgLen) {
+				if (udpHdr.length == msgLen &&
+					udpHdr.dstPort == myPos) {
 					uint8_t udpData[MAX_UDP_DATAGRAM_SIZE];
 					readFromPgs(pgPtr, udpData, msgLen);
-					appRecv(udpHdr.dstPort, udpData, msgLen);
+#ifdef NETWORK_ISR_RECV
+					appRecv(udpHdr.srcPort, udpData, msgLen);
+#endif
 				}
 			}
 		}

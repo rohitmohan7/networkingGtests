@@ -12,4 +12,6 @@ void netTick();
 extern NodeCfg_t topology[MAX_POS]; // topology from config
 extern PosType_t myPos;
 
+
+#define NETWORK_ISR_RECV
 #endif

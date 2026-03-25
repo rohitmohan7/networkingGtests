@@ -101,6 +101,7 @@ struct MockUart {
     MOCK_METHOD(void, l1UARTWriteNonBlocking, (UART_Type * UART, const uint8_t *data, size_t length, L2Crc_t *crc), ());
     MOCK_METHOD(bool, l1UARTCmpNonBlocking, (UART_Type* UART, const uint8_t* data, size_t length), ());
     MOCK_METHOD(void, l1UARTReadNonBlocking, (UART_Type * UART, uint8_t *data, size_t length, L2Crc_t *crc), ());
+    MOCK_METHOD(void, appRecv, (uint16_t pos, const uint8_t* const data, MsgLenType_t len), ());
     MOCK_METHOD(uint32_t, pitGetCurrMS, (), ());
 };
 
@@ -123,6 +124,12 @@ extern "C" bool l1UARTCmpNonBlocking(UART_Type* UART, const uint8_t* data, size_
 {
     EXPECT_NE(g_mock, nullptr);
     return  g_mock->l1UARTCmpNonBlocking(UART, data, length);
+}
+
+extern "C" void appRecv(uint16_t pos, const uint8_t* const data, MsgLenType_t len) { // TODO
+
+    EXPECT_NE(g_mock, nullptr);
+    return  g_mock->appRecv(pos, data, len);
 }
 
 extern "C" uint32_t pitGetCurrMS()
@@ -570,7 +577,7 @@ void sendPduMsg(MockUart &mock,
 }
 
 #define L2_FRAME_SIZE (RS485_FRAME_SIZE - sizeof(L2Hdr) - sizeof(L2Crc_t))
-#define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
+#define L3_FRAME_SIZE   ((L2_FRAME_SIZE - sizeof(L3Hdr)) & ~((uint16_t)0x7U)) /* 8 byte aligned */
 #define L4_FRAME_SIZE (L3_FRAME_SIZE - sizeof(L4Hdr))
 
 L2Crc_t expectHdr(MockUart &mock, UART_Type *UART, const PduHdr &pduHdr, const uint8_t &port, const bool &echo, const bool & forward = false, const L2Crc_t expectCrcIn = 0)
@@ -1179,7 +1186,10 @@ TEST_P(MultiHop, addr) {
 }
 //#endif
 
-TEST_P(MultiHop, udpPdu)
+#define IPV4_VERSION 4
+#define IPV4_VERSION_SHIFT 4
+
+TEST_P(MultiHop, udpPduRx)
 {
     if (GetParam().pos != 7) {
         const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
@@ -1205,7 +1215,6 @@ TEST_P(MultiHop, udpPdu)
 
     for (int port = 0; port < MAX_PORT; port++)
     {
-
         // confirm UART TX is disabled
         ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
 
@@ -1225,13 +1234,25 @@ TEST_P(MultiHop, udpPdu)
 
 
         L2Hdr l2Hdr = { 0x3, (L2_PKT_TYPE_PDU) };
-        UdpHdr_t udpHdr = { MSG_SIZE, 3 };
+        UdpHdr_t udpHdr = { .srcPort = 3, .dstPort = 7, .length = MSG_SIZE };
 
-        std::array<uint8_t, RS485_FRAME_SIZE> pktFrag1;
+        const uint16_t fragSize = L3_FRAME_SIZE + sizeof(L2Hdr) + sizeof(L3Hdr) + sizeof(L2Crc_t);
+
+        std::array<uint8_t, fragSize> pktFrag1;
 
         memcpy(pktFrag1.data(), &l2Hdr, sizeof(L2Hdr));
 
-        L3Hdr l3Hdr = { 0x101, l3Addr, 1, IP_PROTO_UDP, 1, 0, ((1 << 13) | 0) };
+        L3Hdr l3Hdr = { .verIhl = (uint8_t)((IPV4_VERSION << IPV4_VERSION_SHIFT) | (sizeof(L3Hdr) >> 2U)),
+                        .prio = 0,
+                        .totalLen = sizeof(L3Hdr) + L3_FRAME_SIZE,
+                        .fragId = 1,
+                        .fragOfst = ((1 << 13) | 0),
+                        .ttl = 1,
+                        .proto = IP_PROTO_UDP,
+                        .src = 0x101, 
+                        .dst = l3Addr
+                      };
+
         memcpy(pktFrag1.data() + sizeof(L2Hdr), &l3Hdr, sizeof(L3Hdr));
         memcpy(pktFrag1.data() + sizeof(L2Hdr) + sizeof(L3Hdr), &udpHdr, sizeof(UdpHdr_t));
         const int size = (L3_FRAME_SIZE);
@@ -1244,10 +1265,11 @@ TEST_P(MultiHop, udpPdu)
             &expectCrc,
             sizeof(L2Crc_t));
 
-        std::array<uint8_t, RS485_FRAME_SIZE> pktFrag2;
+        std::array<uint8_t, fragSize> pktFrag2;
         memcpy(pktFrag2.data(), &l2Hdr, sizeof(L2Hdr));
 
-        l3Hdr = { 0x101, l3Addr, 1, IP_PROTO_UDP, 1, 0, ((1 << 13) | (L3_FRAME_SIZE)) };
+        uint16_t l3HdrSize = L3_FRAME_SIZE;
+        l3Hdr.fragOfst = ((1 << 13) | (L3_FRAME_SIZE >> 3));
         memcpy(pktFrag2.data() + sizeof(L2Hdr), &l3Hdr, sizeof(L3Hdr));
         memcpy(pktFrag2.data() + sizeof(L2Hdr) + sizeof(L3Hdr), msg.data() + (L3_FRAME_SIZE - sizeof(UdpHdr_t)), (L3_FRAME_SIZE));
 
@@ -1258,10 +1280,10 @@ TEST_P(MultiHop, udpPdu)
             &expectCrc,
             sizeof(L2Crc_t));
 
-        std::array<uint8_t, RS485_FRAME_SIZE> pktFrag3;
+        std::array<uint8_t, fragSize> pktFrag3;
         memcpy(pktFrag3.data(), &l2Hdr, sizeof(L2Hdr));
 
-        l3Hdr = { 0x101, l3Addr, 1, IP_PROTO_UDP, 1, 0, (((2*L3_FRAME_SIZE))) };
+        l3Hdr.fragOfst = (2*L3_FRAME_SIZE) >> 3;
         memcpy(pktFrag3.data() + sizeof(L2Hdr), &l3Hdr, sizeof(L3Hdr));
         memcpy(pktFrag3.data() + sizeof(L2Hdr) + sizeof(L3Hdr), msg.data() + ((2*L3_FRAME_SIZE) - sizeof(UdpHdr_t)), (L3_FRAME_SIZE));
 
@@ -1280,30 +1302,25 @@ TEST_P(MultiHop, udpPdu)
         sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag3.data(),
             pktFrag3.size(), port, true);
 
+#ifdef NETWORK_ISR_RECV
+        EXPECT_CALL(mock, appRecv(3, testing::NotNull(), msg.size()))
+            .Times(1)
+            .WillOnce(testing::Invoke([msg](uint16_t pos, const uint8_t* data, size_t len)
+                {
+                    for (int i = 0; i < len; i++) {
+                        if (data[i] != msg[i]) {
+                            std::cout << "data mismatch at idx " << i << std::endl;
+                            break;
+                        }
+                    }
+
+                    ASSERT_EQ(0, std::memcmp(data, msg.data(), len));
+                }))
+            .RetiresOnSaturation();
+#endif
         /* Send Out Frag 2 next*/
         sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag2.data(),
             pktFrag2.size(), port, true);
-#if 0
-        PduHdr pduHdr = PduHdr{
-            .l2hdr = {0x3, (L2_PKT_TYPE_PDU)},
-            .l3hdr = {0x101, l3Addr, 1, 0},
-            .l4hdr = {0, 0, 0} };
-
-        memcpy(msg.data(), (uint8_t*)&pduHdr, sizeof(PduHdr));
-
-        // give crc
-        L2Crc_t expectCrc = crcTestContinous(0x00,
-            msg.data(),
-            msg.size() - sizeof(L2Crc_t));
-
-        std::memcpy(msg.data() + msg.size() - sizeof(L2Crc_t),
-            &expectCrc,
-            sizeof(L2Crc_t));
-
-        // send msg
-        sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
-            msg.size(), port); 
-#endif
     }
     ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
 }

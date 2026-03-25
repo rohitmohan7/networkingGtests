@@ -5,8 +5,11 @@
 
 #define MAX_SUBNET 256
 
+typedef uint16_t IpAddrType_t; // TODO future: change to unit32_t if interfacing with IEEE 802 networks 
+
 typedef uint8_t FragIdType_t;
 
+/* For portability for future we keep IP header format, for example if we want to send packets seamlessly from RS485 to Ethernet (IEEE 802 networks) */
 typedef struct __attribute__((packed)) {
 	uint8_t verIhl; // version + header len (shows packet boundary for backward campatibility/extension)
 	uint8_t prio; // DSCP / ECN
@@ -14,11 +17,18 @@ typedef struct __attribute__((packed)) {
 	uint16_t fragId; // used for reassembly 
 	uint16_t fragOfst;
 	uint8_t ttl;
-	Protocol_t proto;
+	uint8_t proto;
 	uint16_t hdrChecksum; // redundant as L2 has CRC
-	uint16_t src;
-	uint16_t dst;
+	IpAddrType_t src;
+	IpAddrType_t dst;
 } L3Hdr;
+_Static_assert((sizeof(L3Hdr) % 4U) == 0U, "L3Hdr size must be multiple of 4 bytes");
+
+// #define IPV4_HDR_MIN_SIZE 20  // TODO future: if interfacing with IEEE 802 networks min ipv4 hdr len is 20 bytes
+#define IPV4_HDR_MIN_LEN sizeof(L3Hdr)
+#define IPV4_HDR_MAX_LEN 60
+
+_Static_assert(sizeof(L3Hdr) >= IPV4_HDR_MIN_LEN && sizeof(L3Hdr) <= IPV4_HDR_MAX_LEN, "L3Hdr invalid size");
 
 typedef struct __attribute__((packed)) {
   uint8_t data[sizeof(L4Hdr)]; // first 4 data of frwd pkt not neccesarily l4 hdr

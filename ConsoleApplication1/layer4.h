@@ -16,17 +16,17 @@
 #define MAX_L4_RETRY 3
 #define L4_RETRY_TIMEOUT 200
 
-typedef enum Protocol_et {
+typedef enum __attribute__((packed)) Protocol_et {
     IP_PROTO_UNKOWN,
     IP_PROTO_UDP,
     IP_PROTO_TCP
 } Protocol_t;
 
 typedef struct __attribute__((packed)) UdpHdr_st {
-    MsgLenType_t msgLen;
-    //PosType_t srcPort; //  TODO is this needed ?
-    PosType_t dstPort; // port is pos
-    // uint16_t checksum; // TODO is this needed ?
+    uint16_t srcPort;
+    uint16_t dstPort; // port is pos
+    uint16_t length;
+    uint16_t checksum; // TODO is this needed since l2 RS485 already check CRC?
 } UdpHdr_t;
 
 typedef uint16_t TxOrderType;

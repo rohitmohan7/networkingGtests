@@ -6,14 +6,18 @@
 #define MAX_SUBNET 256
 
 typedef uint8_t FragIdType_t;
+
 typedef struct __attribute__((packed)) {
+	uint8_t verIhl; // version + header len (shows packet boundary for backward campatibility/extension)
+	uint8_t prio; // DSCP / ECN
+	uint16_t totalLen;
+	uint16_t fragId; // used for reassembly 
+	uint16_t fragOfst;
+	uint8_t ttl;
+	Protocol_t proto;
+	uint16_t hdrChecksum; // redundant as L2 has CRC
 	uint16_t src;
 	uint16_t dst;
-	FragIdType_t fragId;
-	Protocol_t proto;
-	uint8_t ttl;
-	uint8_t prio;
-	uint16_t fragOfst;
 } L3Hdr;
 
 typedef struct __attribute__((packed)) {

@@ -9,7 +9,12 @@
 #define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
 #define L4_FRAME_SIZE (L3_FRAME_SIZE - sizeof(L4Hdr))
 
-#define IP_MORE_FRAG_MASK 0x1000
+#define IP_REASS_BLOCK_SIZE       8U
+#define IP_REASS_MAX_LEN          2048U
+#define IP_REASS_MAX_BLOCKS       ((IP_REASS_MAX_LEN + IP_REASS_BLOCK_SIZE - 1U) / IP_REASS_BLOCK_SIZE)
+#define IP_REASS_BITMAP_BYTES     ((IP_REASS_MAX_BLOCKS + 7U) / 8U)
+
+#define IP_MORE_FRAG_MASK 0x2000
 
 uint16_t l3AddrTblPrio[MAX_POS][MAX_PORT]; // pos addresses ordered by tx priority
 uint16_t l3RouteTable[MAX_SUBNET]; // next best gateway for subnet
@@ -18,10 +23,10 @@ uint8_t l3RouteHops[MAX_SUBNET]; // l3 hop table for my pos
 
 #define IP_REASS_TIMEOUT_TICKS 10*1000 // 10 seconds
 
-typedef struct
+typedef struct __attribute__((packed)) IpReassKey_st
 {
-	uint32_t src;
-	uint32_t dst;
+	uint16_t src;
+	uint16_t dst;
 	FragIdType_t id;
 	Protocol_t proto;
 } IpReassKey_t;
@@ -33,6 +38,7 @@ typedef struct IpReassQueue_st {
 	PgPtr_t rxPgPtr;
 	uint16_t maxLen;
 	uint16_t rxLen;
+	uint8_t  blockMap[IP_REASS_BITMAP_BYTES];
 	bool used;
 } IpReassQueue_t;
 
@@ -778,13 +784,30 @@ static bool ipReassLoadRxPgPTr(IpReassQueue_t *const ipReassObj, const uint16_t 
 			fragIdx -= len;
 		}
 		/* set the rx */
-		memset(&ipReassObj->rxPgPtr, &ipReassObj->pgPtr.tlPg , sizeof(PgPtrTl_t));
-		memset(&ipReassObj->rxPgPtr.tlPg, &ipReassObj->pgPtr.tlPg, sizeof(PgPtrTl_t));
+		memcpy(&ipReassObj->rxPgPtr, &ipReassObj->pgPtr.tlPg , sizeof(PgPtrTl_t));
+		memcpy(&ipReassObj->rxPgPtr.tlPg, &ipReassObj->pgPtr.tlPg, sizeof(PgPtrTl_t));
 	} else {
 		memset(&ipReassObj->rxPgPtr, &ipReassObj->pgPtr, sizeof(PgPtr_t));
 		advancePgPtrLen(&ipReassObj->rxPgPtr, fragIdx); // advance to frame idx
 	}
 	return true;
+}
+
+static inline bool ipReassHdrValid(const L3Hdr* const l3Hdr) {
+	bool moreFragments = l3Hdr->fragOfst & IP_MORE_FRAG_MASK;
+
+	uint8_t ihlWords = (uint8_t)(l3Hdr->verIhl & 0x0FU);
+
+	/* validate max len */
+	if (!moreFragments) {
+		uint16_t fragIdx = (uint16_t)((l3Hdr->fragOfst & 0x1FFFU) * 8U);
+		uint16_t msgLen = fragIdx + (l3Hdr->totalLen - l3Hdr->ihl);
+		if (msgLen > IP_REASS_MAX_LEN) {
+			return false;
+		}
+	}
+
+
 }
 
 static inline IpReassQueue_t * ipReassFindQueue(const L3Hdr * hdr)
@@ -806,7 +829,10 @@ static inline IpReassQueue_t * ipReassAllocQueue(const L3Hdr * hdr)
     {
 		if (g_ipReass[i].key.proto == IP_PROTO_UNKOWN)
 		{
-			memcpy(&g_ipReass[i].key, hdr, sizeof(IpReassKey_t));	/* make sure hdr first bytes is key */
+			g_ipReass[i].key.src = hdr->src;
+			g_ipReass[i].key.dst = hdr->dst;
+			g_ipReass[i].key.proto = hdr->proto;
+			g_ipReass[i].key.id = hdr->fragId;
 			g_ipReass[i].expireTick = pitGetCurrMS() + IP_REASS_TIMEOUT_TICKS;
 			return &g_ipReass[i];
         }

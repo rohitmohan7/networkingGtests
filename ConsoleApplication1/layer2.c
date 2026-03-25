@@ -307,15 +307,6 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 				}
 			}
 
-			const uint8_t pduHdrSize = sizeof(L2Hdr) + l3GetRxPktHdrSize(&l2RxPktDesc[port].l2RxPkt.msg.pdu, port);
-
-			if (idx < pduHdrSize)
-			{
-				*ptr = ((uint8_t *)&l2RxPktDesc[port].l2RxPkt.hdr) + idx;
-				len = pduHdrSize - idx;
-				return len;
-			}
-
 			len = getL3RxPktFrag(port, &l2RxPktDesc[port].l2RxPkt.msg.pdu, ptr, rxLen);
 		}
 

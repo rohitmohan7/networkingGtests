@@ -569,7 +569,7 @@ void sendPduMsg(MockUart &mock,
     PITCallback(port + L2_PIT_TIMER_START_IDX);
 }
 
-#define L2_FRAME_SIZE (RS485_FRAME_SIZE - sizeof(L2Hdr))
+#define L2_FRAME_SIZE (RS485_FRAME_SIZE - sizeof(L2Hdr) - sizeof(L2Crc_t))
 #define L3_FRAME_SIZE (L2_FRAME_SIZE - sizeof(L3Hdr))
 #define L4_FRAME_SIZE (L3_FRAME_SIZE - sizeof(L4Hdr))
 
@@ -1179,6 +1179,134 @@ TEST_P(MultiHop, addr) {
 }
 //#endif
 
+TEST_P(MultiHop, udpPdu)
+{
+    if (GetParam().pos != 7) {
+        const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
+        GTEST_SKIP() << "pos " << GetParam().pos << " test " << info->name() << " TODO";
+    }
+
+    MockUart mock;
+    g_mock = &mock;
+    testing::InSequence seq;
+    // construct message
+    static const int MSG_SIZE = (3*L3_FRAME_SIZE) - sizeof(UdpHdr_t);
+    std::array<uint8_t, MSG_SIZE> msg;
+    for (int i = 0; i < MSG_SIZE; i++)
+    {
+        msg[i] = i;
+    }
+
+    uint8_t size;
+    PduHdr pduHdr{};
+
+    uint8_t idx[MAX_PORT];
+    uint32_t milliSeconds = 0;
+
+    for (int port = 0; port < MAX_PORT; port++)
+    {
+
+        // confirm UART TX is disabled
+        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
+
+        uint16_t l3Addr = GetParam().l3AddrTblPrio[GetParam().pos][port];
+        uint8_t l2Addr = (l3Addr & 0x00FF);
+        if (l2Addr == 0 /* ||
+               portsTested[port]*/
+            )
+        {
+            continue;
+        }
+
+        // confirm RX is enabled
+        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
+
+        uint8_t rxPgOfst = 0;
+
+
+        L2Hdr l2Hdr = { 0x3, (L2_PKT_TYPE_PDU) };
+        UdpHdr_t udpHdr = { MSG_SIZE, 3 };
+
+        std::array<uint8_t, RS485_FRAME_SIZE> pktFrag1;
+
+        memcpy(pktFrag1.data(), &l2Hdr, sizeof(L2Hdr));
+
+        L3Hdr l3Hdr = { 0x101, l3Addr, 1, IP_PROTO_UDP, 1, 0, ((1 << 13) | 0) };
+        memcpy(pktFrag1.data() + sizeof(L2Hdr), &l3Hdr, sizeof(L3Hdr));
+        memcpy(pktFrag1.data() + sizeof(L2Hdr) + sizeof(L3Hdr), &udpHdr, sizeof(UdpHdr_t));
+        const int size = (L3_FRAME_SIZE);
+        memcpy(pktFrag1.data() + sizeof(L2Hdr) + sizeof(L3Hdr) + sizeof(UdpHdr_t), msg.data(), (L3_FRAME_SIZE-sizeof(UdpHdr_t)));
+
+        L2Crc_t expectCrc = crcTestContinous(0x00,
+            pktFrag1.data(),
+            pktFrag1.size() - sizeof(L2Crc_t));
+        std::memcpy(pktFrag1.data() + pktFrag1.size() - sizeof(L2Crc_t),
+            &expectCrc,
+            sizeof(L2Crc_t));
+
+        std::array<uint8_t, RS485_FRAME_SIZE> pktFrag2;
+        memcpy(pktFrag2.data(), &l2Hdr, sizeof(L2Hdr));
+
+        l3Hdr = { 0x101, l3Addr, 1, IP_PROTO_UDP, 1, 0, ((1 << 13) | (L3_FRAME_SIZE)) };
+        memcpy(pktFrag2.data() + sizeof(L2Hdr), &l3Hdr, sizeof(L3Hdr));
+        memcpy(pktFrag2.data() + sizeof(L2Hdr) + sizeof(L3Hdr), msg.data() + (L3_FRAME_SIZE - sizeof(UdpHdr_t)), (L3_FRAME_SIZE));
+
+        expectCrc = crcTestContinous(0x00,
+            pktFrag2.data(),
+            pktFrag2.size() - sizeof(L2Crc_t));
+        std::memcpy(pktFrag2.data() + pktFrag2.size() - sizeof(L2Crc_t),
+            &expectCrc,
+            sizeof(L2Crc_t));
+
+        std::array<uint8_t, RS485_FRAME_SIZE> pktFrag3;
+        memcpy(pktFrag3.data(), &l2Hdr, sizeof(L2Hdr));
+
+        l3Hdr = { 0x101, l3Addr, 1, IP_PROTO_UDP, 1, 0, (((2*L3_FRAME_SIZE))) };
+        memcpy(pktFrag3.data() + sizeof(L2Hdr), &l3Hdr, sizeof(L3Hdr));
+        memcpy(pktFrag3.data() + sizeof(L2Hdr) + sizeof(L3Hdr), msg.data() + ((2*L3_FRAME_SIZE) - sizeof(UdpHdr_t)), (L3_FRAME_SIZE));
+
+        expectCrc = crcTestContinous(0x00,
+            pktFrag3.data(),
+            pktFrag3.size() - sizeof(L2Crc_t));
+        std::memcpy(pktFrag3.data() + pktFrag3.size() - sizeof(L2Crc_t),
+            &expectCrc,
+            sizeof(L2Crc_t));
+
+        /* Send Frag 1 first */
+        sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag1.data(),
+            pktFrag1.size(), port, true);
+
+        /* Send Out of order Frag 3 next */
+        sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag3.data(),
+            pktFrag3.size(), port, true);
+
+        /* Send Out Frag 2 next*/
+        sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag2.data(),
+            pktFrag2.size(), port, true);
+#if 0
+        PduHdr pduHdr = PduHdr{
+            .l2hdr = {0x3, (L2_PKT_TYPE_PDU)},
+            .l3hdr = {0x101, l3Addr, 1, 0},
+            .l4hdr = {0, 0, 0} };
+
+        memcpy(msg.data(), (uint8_t*)&pduHdr, sizeof(PduHdr));
+
+        // give crc
+        L2Crc_t expectCrc = crcTestContinous(0x00,
+            msg.data(),
+            msg.size() - sizeof(L2Crc_t));
+
+        std::memcpy(msg.data() + msg.size() - sizeof(L2Crc_t),
+            &expectCrc,
+            sizeof(L2Crc_t));
+
+        // send msg
+        sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
+            msg.size(), port); 
+#endif
+    }
+    ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
+}
 
 #if 0
 TEST_P(MultiHop, mstPassFail) {

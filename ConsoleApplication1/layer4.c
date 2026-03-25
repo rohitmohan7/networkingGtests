@@ -16,13 +16,6 @@ stream_t streams[MAX_POS][MAX_PRIORITY];
 
 TxOrderType txOrder = 0;
 
-typedef struct __attribute__((packed)) {
-	MsgLenType_t msgLen;
-	//PosType_t srcPort; //  TODO is this needed ?
-	PosType_t dstPort; // port is pos
-	// uint16_t checksum; // TODO is this needed ?
-} UdpHdr;
-
 void l4Init() {
 	
 	// init streams
@@ -356,12 +349,12 @@ void l4CmtRx(PgPtr_t* const pgPtr, const Protocol_t proto, MsgLenType_t msgLen) 
 
 	switch (proto) {
 	case IP_PROTO_UDP:
-		if (msgLen > sizeof(UdpHdr)) {
-			msgLen -= sizeof(UdpHdr);
+		if (msgLen > sizeof(UdpHdr_t)) {
+			msgLen -= sizeof(UdpHdr_t);
 			if (msgLen <= MAX_UDP_DATAGRAM_SIZE) {
 				/* first read udp header */
-				UdpHdr udpHdr;
-				readFromPgs(pgPtr, (uint8_t*)&udpHdr, sizeof(UdpHdr));
+				UdpHdr_t udpHdr;
+				readFromPgs(pgPtr, (uint8_t*)&udpHdr, sizeof(UdpHdr_t));
 
 				if (udpHdr.msgLen == msgLen) {
 					uint8_t udpData[MAX_UDP_DATAGRAM_SIZE];

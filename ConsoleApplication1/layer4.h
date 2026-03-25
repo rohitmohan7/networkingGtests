@@ -22,6 +22,13 @@ typedef enum Protocol_et {
     IP_PROTO_TCP
 } Protocol_t;
 
+typedef struct __attribute__((packed)) UdpHdr_st {
+    MsgLenType_t msgLen;
+    //PosType_t srcPort; //  TODO is this needed ?
+    PosType_t dstPort; // port is pos
+    // uint16_t checksum; // TODO is this needed ?
+} UdpHdr_t;
+
 typedef uint16_t TxOrderType;
 
 

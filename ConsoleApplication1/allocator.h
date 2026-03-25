@@ -33,6 +33,7 @@ typedef struct PgPtr_st
     uint8_t hdOfst; /* 0..UNIT-1 */
     uint8_t tlPg;
     uint8_t tlUsd;
+    uint16_t len;
 } PgPtr_t;
 
 uint8_t page_alloc(void);
@@ -40,7 +41,7 @@ void pages_init(void);
 uint8_t ceilPages(uint8_t len);
 uint16_t pageOff(uint8_t p);
 void page_free(uint8_t p);
-uint8_t *getPgPtr(PgPtr_t *pgPtr, uint8_t *len, uint8_t reqLen);
+uint8_t *getPgPtr(PgPtr_t *pgPtr, uint8_t *len, uint16_t reqLen);
 
 static inline uint16_t min(uint16_t a, uint16_t b) { return (a < b) ? a : b; }
 void freePgPtr(PgPtr_t *pgPtr);
@@ -52,4 +53,5 @@ void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint16_t size);
 uint16_t  freePgPtrLen(PgPtr_t* pgPtr, uint16_t len);
 uint16_t  advancePgPtrLen(PgPtr_t* pgPtr, uint16_t len);
 bool allocPgPtr(PgPtr_t* pgPtr, uint16_t len);
+void getPgPtrSpan(PgPtr_t* fromPgPtr, PgPtr_t* tpPgPtr, uint16_t start, uint16_t len);
 #endif

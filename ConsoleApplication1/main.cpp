@@ -1198,7 +1198,7 @@ TEST_P(MultiHop, udpPduRx)
 
     MockUart mock;
     g_mock = &mock;
-    testing::InSequence seq;
+    //testing::InSequence seq;
     // construct message
     static const int MSG_SIZE = (3*L3_FRAME_SIZE) - sizeof(UdpHdr_t);
     std::array<uint8_t, MSG_SIZE> msg;
@@ -1294,6 +1294,16 @@ TEST_P(MultiHop, udpPduRx)
             &expectCrc,
             sizeof(L2Crc_t));
 
+        /*EXPECT_CALL(mock, pitGetCurrMS())
+            .Times(1)
+            .WillOnce(testing::Return(0))
+            .RetiresOnSaturation();
+            */
+        EXPECT_CALL(mock, pitGetCurrMS())
+            .Times(1)
+            .WillOnce(testing::Return(milliSeconds))
+            .RetiresOnSaturation();
+
         /* Send Frag 1 first */
         sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag1.data(),
             pktFrag1.size(), port, true);
@@ -1301,7 +1311,7 @@ TEST_P(MultiHop, udpPduRx)
         /* Send Out of order Frag 3 next */
         sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag3.data(),
             pktFrag3.size(), port, true);
-
+//#if 0
 #ifdef NETWORK_ISR_RECV
         EXPECT_CALL(mock, appRecv(3, testing::NotNull(), msg.size()))
             .Times(1)
@@ -1321,11 +1331,11 @@ TEST_P(MultiHop, udpPduRx)
         /* Send Out Frag 2 next*/
         sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag2.data(),
             pktFrag2.size(), port, true);
+//#endif
     }
     ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
 }
 
-#if 0
 TEST_P(MultiHop, mstPassFail) {
 
     MockUart mock;
@@ -1404,7 +1414,7 @@ TEST_P(MultiHop, mstPassMsg) {
 }
 //#endif
 
-//#if 0
+#if 0
 TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
 
     if (GetParam().pos != 7) {
@@ -1888,7 +1898,7 @@ TEST_P(MultiHop, pduNoHopRxAck)
     }
     ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
 }
-//#endif
+#endif
 
 //#if 0
 TEST_P(MultiHop, pduHopFrwd)
@@ -1993,7 +2003,7 @@ TEST_P(MultiHop, pduHopFrwd)
 
             PduHdr pduHdr = PduHdr{
                 .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU)},
-                .l3hdr = {l3SrcAddr, l3DstAddr, 2, 0},
+                .l3hdr = {.prio = 0, .ttl = 2, .src = l3SrcAddr, .dst = l3DstAddr },
                 .l4hdr = {0, 0, 0}};
 
             memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
@@ -2019,7 +2029,7 @@ TEST_P(MultiHop, pduHopFrwd)
             // first expect hdr
             pduHdr = PduHdr{
                 .l2hdr = {l3DstAddr, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST)},
-                .l3hdr = {l3SrcAddr, l3DstAddr, 1, 0},
+                .l3hdr = {.prio = 0, .ttl = 1, .src = l3SrcAddr, .dst = l3DstAddr },
                 .l4hdr = {0, 0, 0}};
 
             uint8_t size;
@@ -2049,7 +2059,7 @@ TEST_P(MultiHop, pduHopFrwd)
 
                     PduHdr pduHdr = PduHdr{
                         .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU)},
-                        .l3hdr = {l3SrcAddr, l3DstAddr, 2, 0},
+                        .l3hdr = {.prio = 0, .ttl = 2, .src = l3SrcAddr, .dst = l3DstAddr },
                         .l4hdr = {0, 0, 0}};
 
                     memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
@@ -2075,7 +2085,7 @@ TEST_P(MultiHop, pduHopFrwd)
                     // first expect hdr
                     pduHdr = PduHdr{
                         .l2hdr = {GetParam().l3RouteTable[subnet], (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST)},
-                        .l3hdr = {l3SrcAddr, l3DstAddr, 1, 0},
+                        .l3hdr = {.prio = 0, .ttl = 1, .src = l3SrcAddr, .dst = l3DstAddr },
                         .l4hdr = {0, 0, 0}};
 
                     uint8_t size;
@@ -2193,7 +2203,7 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
 
             PduHdr pduHdr = PduHdr{
                 .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU)},
-                .l3hdr = {l3SrcAddr, l3DstAddr, 2, 0},
+                .l3hdr = {.prio = 0, .ttl = 2, .src = l3SrcAddr, .dst = l3DstAddr },
                 .l4hdr = {0, 0, 0}};
 
             memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
@@ -2219,7 +2229,7 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
             // first expect hdr
             pduHdr = PduHdr{
                 .l2hdr = {l3DstAddr, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST)},
-                .l3hdr = {l3SrcAddr, l3DstAddr, 1, 0},
+                .l3hdr = {.prio = 0, .ttl = 1, .src = l3SrcAddr, .dst = l3DstAddr },
                 .l4hdr = {0, 0, 0}};
 
             uint8_t size;
@@ -2241,7 +2251,7 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
 }
 //#endif
 
-//#if 0
+#if 0
 TEST_P(MultiHop, pduBrdCst) {
     MockUart mock;
     g_mock = &mock;

@@ -753,6 +753,48 @@ static inline bool l3CmtL4RxHd(L3Pkt* l3Pkt)
 	return false;
 }
 
+static inline uint8_t * getPgPtrNoAlloc(PgPtr_t* pgPtr, uint8_t * availLen, uint8_t len) {
+	if (pgPtr->hdPg == pgPtr->tlPg &&
+		(pgPtr->hdOfst == pgPtr->tlUsd)) {
+		return NULL;
+	}
+
+	const uint16_t base = pageOff(pgPtr->hdPg) + (uint16_t)(pgPtr->hdOfst); /* current head */
+	uint8_t take;
+	
+	
+	if (pgPtr->hdPg == pgPtr->tlPg) {
+		/* cap take to tail used */
+		take = min(len, (pgPtr->tlUsd - pgPtr->hdOfst));
+	} else {
+		take = min(len, (UNIT - pgPtr->hdOfst));
+	}
+
+	*availLen = take;
+	pgPtr->hdOfst += take;
+
+	if (pgPtr->hdPg == pgPtr->tlPg &&
+		(pgPtr->hdOfst >= pgPtr->tlUsd)) {
+		pgPtr->hdOfst = pgPtr->tlUsd;
+	}
+	else if (pgPtr->hdOfst == UNIT) {
+		/* free and advance head */
+		uint8_t currPage = pgPtr->hdPg;
+		pgPtr->hdPg = g_next[currPage];
+
+#if 0
+		if (pgPtr->hdPg == INVALID_PAGE) {
+			pgPtr->tlPg == INVALID_PAGE;
+			return (origLen - len);
+		}
+#endif
+
+		pgPtr->hdOfst = 0;
+	}
+
+	return &g_pool[base];
+}
+
 uint8_t getL3RxPktFrag(uint8_t port, L3Pkt* l3Pkt, uint8_t** ptr, uint8_t rxLen)
 {
 	L3Hdr* l3Hdr = &l3Pkt->hdr;
@@ -771,7 +813,7 @@ uint8_t getL3RxPktFrag(uint8_t port, L3Pkt* l3Pkt, uint8_t** ptr, uint8_t rxLen)
 	}
 #endif
 	uint8_t len;
-	*ptr = getPgPtr(&l3Pkt->ipReassQueue->rxPgPtr, &len, rxLen);
+	*ptr = getPgPtrNoAlloc(&l3Pkt->ipReassQueue->rxPgPtr, &len, rxLen);
 	return len;
 	//return getL4RxPktFrag(&l3Pkt->l4Pkt, ptr, rxLen, l3Hdr->prio);
 }
@@ -784,32 +826,78 @@ static inline bool ipReassKeyEqual(const IpReassKey_t* key, const L3Hdr* hdr)
 		(key->proto == hdr->proto);
 }
 
+static inline uint16_t getIpv4HdrLen(const L3Hdr* const l3Hdr) {
+	const uint8_t ihlWords = (uint8_t)(l3Hdr->verIhl & IPV4_WORD_MASK);
+	const uint16_t hdrLenBytes = (uint16_t)ihlWords << 2;
+	return hdrLenBytes;
+}
 
-static bool ipReassLoadRxPgPTr(IpReassQueue_t* const ipReassObj, const uint16_t fragOfst)
+static bool ipReassLoadRxPgPTr(IpReassQueue_t* const ipReassObj, const L3Hdr * const l3Hdr)
 {
 	/* Todo check if there is enough pages else fail early */
 	/* set up to frag idx */
-	uint16_t fragIdx = (uint16_t)((fragOfst & 0x1FFFU) << 3);
+	/* pre allocate */
+	const uint16_t payloadLen = (l3Hdr->totalLen - getIpv4HdrLen(l3Hdr));
+	uint16_t startByte = (uint16_t)((l3Hdr->fragOfst & 0x1FFFU) << 3);
+	uint32_t endByte = (uint32_t)startByte + (uint32_t)payloadLen;
+	
+	if (!allocPgPtr(&ipReassObj->pgPtr, endByte)) { /* first allocate up to start byte */
+		return false;
+	}
+
+	getPgPtrSpan(&ipReassObj->pgPtr, &ipReassObj->rxPgPtr, startByte, payloadLen);
+#if 0
 
 	if (ipReassObj->pgPtr.hdPg == INVALID_PAGE) {
-		if (!allocPgPtr(&ipReassObj->pgPtr, fragIdx)) {
+
+		if (startByte) {
+			if (!allocPgPtr(&ipReassObj->pgPtr, startByte)) { /* first allocate up to start byte */
+				return false;
+			}
+			/* set the rx hd to start */
+			memcpy(&ipReassObj->rxPgPtr, &ipReassObj->pgPtr.tlPg, sizeof(PgPtrTl_t));
+		}
+
+		if (!allocPgPtr(&ipReassObj->pgPtr, payloadLen)) { /* allocate payload */
 			return false;
 		}
-		/* set the rx */
-		memcpy(&ipReassObj->rxPgPtr, &ipReassObj->pgPtr.tlPg, sizeof(PgPtrTl_t));
-		memcpy(&ipReassObj->rxPgPtr.tlPg, &ipReassObj->pgPtr.tlPg, sizeof(PgPtrTl_t));
+
+		/* set the rx tl to end */
+		if (startByte) {
+			memcpy(&ipReassObj->rxPgPtr.tlPg, &ipReassObj->pgPtr.tlPg, sizeof(PgPtrTl_t));
+		} else {
+			memcpy(&ipReassObj->rxPgPtr, &ipReassObj->pgPtr, sizeof(PgPtr_t));
+		}
 	}
 	else {
-		//memcpy(&ipReassObj->rxPgPtr, &ipReassObj->pgPtr, sizeof(PgPtr_t));
-		uint16_t moveDist = advancePgPtrLen(&ipReassObj->rxPgPtr, fragIdx); // advance to frame idx
+		memcpy(&ipReassObj->rxPgPtr, &ipReassObj->pgPtr, sizeof(PgPtr_t));
+		uint16_t moveDist = advancePgPtrLen(&ipReassObj->rxPgPtr, startByte); // confirm we can move to end byte
 
-		if (fragIdx > moveDist) {
-			fragIdx -= moveDist;
-			if (!allocPgPtr(&ipReassObj->rxPgPtr, fragIdx)) {
+		if (startByte > moveDist) {
+			startByte -= moveDist;
+			if (!allocPgPtr(&ipReassObj->pgPtr, (payloadLen + startByte))) {
 				return false;
+			}
+			/* copy new tail */
+			memcpy(&ipReassObj->rxPgPtr.tlPg, &ipReassObj->pgPtr.tlPg, sizeof(PgPtrTl_t));
+
+			advancePgPtrLen(&ipReassObj->rxPgPtr, startByte);
+		} else {
+			/* as a sanity confirm we can move to endbyte */
+			PgPtr_t pgPtrCpy = ipReassObj->rxPgPtr;
+			moveDist = advancePgPtrLen(&ipReassObj->rxPgPtr, endByte);
+			if (endByte > moveDist) {
+				endByte -= moveDist;
+				if (!allocPgPtr(&ipReassObj->pgPtr, endByte)) {
+					return false;
+				}
+
+				/* copy new tail */
+				memcpy(&ipReassObj->rxPgPtr.tlPg, &ipReassObj->pgPtr.tlPg, sizeof(PgPtrTl_t));
 			}
 		}
 	}
+#endif
 	return true;
 }
 
@@ -819,12 +907,6 @@ static inline bool ipReassBitGet(const uint8_t* map, uint16_t blockIdx) {
 
 static inline void ipReassBitSet(uint8_t* map, uint16_t blockIdx) {
 	map[blockIdx >> 3] |= (uint8_t)(1U << (blockIdx & 0x7U));
-}
-
-static inline uint16_t getIpv4HdrLen(const L3Hdr* const l3Hdr) {
-	const uint8_t ihlWords = (uint8_t)(l3Hdr->verIhl & IPV4_WORD_MASK);
-	const uint16_t hdrLenBytes = (uint16_t)ihlWords << 2;
-	return hdrLenBytes;
 }
 
 static inline bool ipReassHdrValid(const L3Hdr* const l3Hdr, IpReassQueue_t* const ipReassQueue) {
@@ -922,10 +1004,42 @@ bool l3CmtRxHd(L3Pkt *l3Pkt, const uint8_t port) { // called from L2
 		return false; // drop packet
 	}
 
+#if MAX_PORT > 1
 	if (l3RxfrwdPkt(l3Hdr, port)) {
-		/* TODO */
-		return false;
+		if (l3Hdr->ttl > 1) {
+			const uint8_t dstSubnet = l3Hdr->dst >> L3_ADDR_SUBNET_SHIFT;
+
+			const uint8_t gatewaySubnet = l3RouteTable[dstSubnet] >> 8;
+
+			for (uint8_t peerPort = 0; peerPort < MAX_PORT; peerPort++)
+			{
+				const uint16_t peerPortL3Addr = l3AddrTblPrio[myPos][peerPort];
+
+				if (peerPort == port || !peerPortL3Addr)
+				{
+					continue;
+				}
+
+				// should not happen with the routing model but just incase
+				if (peerPortL3Addr == l3Hdr->dst)
+				{
+					// update the dst for rx cmt so it dosnt think its forwarded pkt
+					l3Hdr->dst = l3AddrTblPrio[myPos][port];
+					return true;
+				}
+
+				const uint8_t peerPortSubnet = peerPortL3Addr >> 8;
+				if ((dstSubnet == peerPortSubnet) ||
+					(gatewaySubnet == peerPortSubnet))
+				{ // forward on peer port
+					l3Pkt->frwdPkt.dstPort = peerPort;
+					return true;
+				}
+			}
+			return false;
+		}
 	}
+#endif
 
 	IpReassQueue_t *q = ipReassFindQueue(l3Hdr);
 
@@ -937,56 +1051,12 @@ bool l3CmtRxHd(L3Pkt *l3Pkt, const uint8_t port) { // called from L2
 		q = ipReassAllocQueue(l3Hdr);
 	}
 	
-	if (!q || !ipReassLoadRxPgPTr(q, l3Hdr->fragOfst)) {
+	if (!q || !ipReassLoadRxPgPTr(q, l3Hdr)) {
 		return false;
 	}
 
 	l3Pkt->ipReassQueue = q;
 	return true;
-
-#if 0
-	if (l3Hdr->prio > MAX_PRIORITY)
-	{ // check prio
-		return false;
-	}
-
-#if MAX_PORT > 1
-	if (l3RxfrwdPkt(l3Hdr, port)) {
-		const uint8_t dstSubnet = l3Hdr->dst >> L3_ADDR_SUBNET_SHIFT;
-
-		const uint8_t gatewaySubnet = l3RouteTable[dstSubnet] >> 8;
-
-		for (uint8_t peerPort = 0; peerPort < MAX_PORT; peerPort++)
-		{
-			const uint16_t peerPortL3Addr = l3AddrTblPrio[myPos][peerPort];
-
-			if (peerPort == port || !peerPortL3Addr)
-			{
-				continue;
-			}
-
-			// should not happen with the routing model but just incase
-			if (peerPortL3Addr == l3Hdr->dst)
-			{
-				// update the dst for rx cmt so it dosnt think its forwarded pkt
-				l3Hdr->dst = l3AddrTblPrio[myPos][port];
-				return true;
-			}
-
-			const uint8_t peerPortSubnet = peerPortL3Addr >> 8;
-			if ((dstSubnet == peerPortSubnet) ||
-				(gatewaySubnet == peerPortSubnet))
-			{ // forward on peer port
-				l3Pkt->frwdPkt.dstPort = peerPort;
-				return true;
-			}
-		}
-		return false;
-	}
-#endif
-#endif
-
-		return true /*l3CmtL4RxHd(l3Pkt)*/;
 }
 
 bool l3RxCmplt(uint8_t rxIdx) {
@@ -1042,12 +1112,14 @@ void l3CmtRx(L3Pkt * const l3Pkt, const uint8_t port, uint8_t l3RxLen)
 		q->maxLen = endByte;
 	}
 
+#if 0
 	/* update page ptr */
 	if (q->pgPtr.hdPg == INVALID_PAGE) {
 		memcpy(&q->pgPtr, &q->rxPgPtr, sizeof(PgPtr_t));
 	} else { // just extend the tail
 		memcpy(&q->pgPtr.tlPg, &q->rxPgPtr.tlPg, sizeof(PgPtrTl_t));
 	}
+#endif
 
 	if (q->maxLen == q->rxLen) {
 		l4CmtRx(&q->pgPtr, q->key.proto, q->maxLen);

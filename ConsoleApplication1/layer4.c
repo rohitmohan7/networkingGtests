@@ -15,7 +15,12 @@
 stream_t streams[MAX_POS][MAX_PRIORITY];
 
 #ifndef NETWORK_ISR_RECV
+	/* UDP Rx stream */
+typedef struct __attribute__((packed)) UdpSock_st {
+	PgPtr_t pfPtr;
+} UdpSock_t;
 
+UdpSock_t udpSck[MAX_POS];
 #endif
 
 

@@ -7,8 +7,6 @@
 
 typedef uint16_t IpAddrType_t; // TODO future: change to unit32_t if interfacing with IEEE 802 networks 
 
-typedef uint8_t FragIdType_t;
-
 /* For portability for future we keep IP header format, for example if we want to send packets seamlessly from RS485 to Ethernet (IEEE 802 networks) */
 typedef struct __attribute__((packed)) {
 	uint8_t verIhl; // version + header len (shows packet boundary for backward campatibility/extension)

@@ -314,8 +314,7 @@ bool getL4Pkt(L4Pkt* l4Pkt, uint16_t pos, uint8_t prio, uint8_t pktPrio) {
 	return false;
 }
 
-void writeValToPage(PgPtr_t * pgPtr, uint8_t *val, uint8_t len)
-{
+void writeValToPage(PgPtr_t * pgPtr, uint8_t *val, uint8_t len) {
 	while (len) {
 		uint8_t writeLen;
 		uint8_t* ptr = getPgPtr(pgPtr, &writeLen, len);
@@ -344,6 +343,19 @@ void l4SndAck(stream_t *const s)
 }
 
 #define MAX_UDP_DATAGRAM_SIZE 1000
+
+typedef struct IpTxQueue_t IpTxQueue_t;
+
+bool l4SendUdp(const uint8_t* data, const uint16_t len, const uint8_t priority, const PosType_t pos) {
+	/* check first if enough pages are available */
+	UdpHdr_t udpHdr = {
+		.srcPort = myPos,
+		.dstPort = pos,
+		.length = len
+	};
+
+	return l3SendUdp(&udpHdr, data, len, priority);
+}
 
 void l4CmtRx(PgPtr_t* const pgPtr, const Protocol_t proto, MsgLenType_t msgLen) { // recieved a frame
 

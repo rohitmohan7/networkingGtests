@@ -33,8 +33,8 @@ typedef struct __attribute__((packed)) IpReassKey_st
 {
 	uint16_t src;
 	uint16_t dst;
-	FragIdType_t id;
-	Protocol_t proto;
+	uint16_t id;
+	uint8_t proto;
 } IpReassKey_t;
 
 typedef struct IpReassQueue_st {
@@ -48,6 +48,21 @@ typedef struct IpReassQueue_st {
 	//bool used;
 } IpReassQueue_t;
 
+typedef struct IpTxQueue_st {
+	IpReassKey_t key;
+	//uint32_t expireTick; TODO expiry?
+	PgPtr_t pgPtr;
+	//PgPtr_t rxPgPtr;
+	//bool used;
+} IpTxQueue_t;
+
+#define IP_MAX_IP_TX_QUEUES 4
+IpTxQueue_t g_ipTxQ[MAX_PORT][MAX_PRIORITY][IP_MAX_IP_TX_QUEUES];
+static uint8_t l3ipTxQHead[MAX_PORT][MAX_PRIORITY];
+static uint8_t l3ipTxQTail[MAX_PORT][MAX_PRIORITY];
+static uint8_t l3ipTxQCount[MAX_PORT][MAX_PRIORITY];
+static uint16_t l3FragId = 0;
+
 #define IP_MAX_REASS_QUEUES 10
 /*src pos*/ /*dst pos*/ /* proto */
 IpReassQueue_t g_ipReass[IP_MAX_REASS_QUEUES];
@@ -58,6 +73,55 @@ IpReassQueue_t g_ipReass[IP_MAX_REASS_QUEUES];
 static inline bool l3TxBrdcstPkt(const L3Hdr *const l3Hdr)
 {
 	return l3Hdr->dst == BROADCAST_ADDR;
+}
+
+static inline IpTxQueue_t* l3PushIpTxQ(const uint8_t port, const uint8_t prio) {
+
+	if (l3ipTxQCount[port][prio] >= IP_MAX_IP_TX_QUEUES) {
+		return NULL;
+	}
+
+	const uint8_t ipTxQTl = l3ipTxQTail[port][prio];
+	IpTxQueue_t* l3IpTxQ = &l3FrwdQ[port][prio][ipTxQTl];
+
+
+	l3ipTxQTail[port][prio] = (uint8_t)((l3FrwdQTail[port][prio] + 1u) % IP_MAX_IP_TX_QUEUES);
+	l3ipTxQCount[port][prio]++;
+	return l3IpTxQ;
+}
+
+bool l3SendUdp(const UdpHdr_t * const udpHdr, uint8_t * data, uint16_t len, const uint8_t prio) {
+	if (udpHdr->dstPort >= MAX_POS) {
+		return false;
+	}
+
+	/* TODO chek if enough pages are available */
+	uint16_t dstAddr = l3AddrTblPrio[udpHdr->dstPort][L3_DST_ADDR_IDX];
+	const uint8_t dstSubnet = (dstAddr & 0xFF00) >> 8;
+	const uint8_t gatewaySubnet = (l3RouteTable[dstSubnet] & 0xFF00) >> 8;
+
+	for (uint8_t port = 0; port < MAX_PORT; port++) {
+		const uint16_t portAddr = l3AddrTblPrio[myPos][port];
+		const uint8_t portSubnet = ((l3AddrTblPrio[myPos][port] & 0xFF00) >> 8);
+		if ((dstSubnet == portSubnet) || (gatewaySubnet == portSubnet)) {
+			IpTxQueue_t* ipTxQ = l3PushIpTxQ(port, prio);
+
+			if (ipTxQ) {
+				writeValToPage(&ipTxQ->pgPtr, (uint8_t *)&udpHdr, len);
+				writeValToPage(&ipTxQ->pgPtr, data, len);
+
+				/* set up the key */
+				ipTxQ->key.dst = dstAddr;
+				ipTxQ->key.proto = IP_PROTO_UDP;
+				ipTxQ->key.src = portAddr;
+				ipTxQ->key.id = l3FragId++;
+				return true;
+			}
+			return false;
+		}
+	}
+	
+	return false;
 }
 
 static inline bool l3Multicst(const L3Hdr *const l3Hdr, const uint8_t port)
@@ -637,9 +701,25 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 			*xferMst = passMstFrwd(port, prio);
 			return true;
 		}
+		
+		if (l3ipTxQCount[port][prio]) {
+			const uint8_t txQHd = l3ipTxQHead[port][prio];
+			IpTxQueue_t* ipTxQ = &g_ipTxQ[port][prio][txQHd];
+
+			/* set l3 header */
+			//l3Hdr->src = ipTxQ->key.src; can be set once after setting addr in netinit
+			l3Hdr->dst = ipTxQ->key.dst;
+			l3Hdr->prio = prio;
+			l3Hdr->proto = ipTxQ->key.proto;
+			l3Hdr->fragId = ipTxQ->key.id;
+
+			*l2Addr = 
+		}
 
 		
 #endif
+
+#if 0
 		/* Check Broadcast Stream */
 		const l3BrdCstStrm_t* brdcstStream = &l3BrdcstStrms[port][prio];
 		/* TODO should we care about tx order prempt or its ok for broadcast msgs to have higher priority over
@@ -707,6 +787,7 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 			}
 			return true;
 		}
+#endif
 	}
 
 	return false;

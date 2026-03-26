@@ -7,6 +7,10 @@ bool appBrdcast(const uint8_t* data, MsgLenType_t len, uint8_t priority) {
     return l3TxBrdcstMsg(data, len, priority);
 }
 
+bool appSendUdp(const uint8_t* data, const uint16_t len, const uint8_t priority, const PosType_t pos) {
+    return l4SendUdp(data, len, priority, pos);
+}
+
 bool appSend(const uint8_t* data, uint16_t len, uint16_t pos, uint8_t priority, bool retry)
 {
     if ((data == NULL) || (len == 0U)) { return false; }

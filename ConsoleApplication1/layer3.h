@@ -55,6 +55,7 @@ extern uint16_t l3AddrTblPrio[MAX_POS][MAX_PORT]; // pos addr table ordered by h
 extern uint16_t l3RouteTable[MAX_SUBNET]; // gateway table
 extern uint8_t l3BcastInSubnetForSrcPort[MAX_POS][MAX_PORT];
 extern uint8_t l3RouteHops[MAX_SUBNET];
+extern uint8_t l3MaxHops;
 
 void l3Init(void);
 
@@ -64,9 +65,9 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr);
 
 void l3TxCmplt(L3Pkt *l3pkt, const uint8_t port);
 
-uint8_t getL3PktFrag(L3Pkt* l3Pkt, uint8_t** ptr, uint8_t idx, uint8_t* txHd, uint8_t* txHdOfst, uint8_t txLen, uint8_t port);
+uint8_t getL3PktFrag(L3Pkt* const l3Pkt, uint8_t** ptr, uint8_t idx, uint8_t txLen, uint8_t port, uint8_t xferDir);
 
-bool getL3PktHd(L3Pkt *l3Pkt, uint8_t *hd, uint8_t *ofst, uint8_t port);
+void setL3PktHd(L3Pkt* l3Pkt, uint8_t port, uint8_t xferDir);
 
 void l3CmtRx(L3Pkt *const l3Pkt, const uint8_t port, uint8_t l3RxLen);
 
@@ -79,5 +80,9 @@ bool l3TxBrdcstMsg(const uint8_t* data, MsgLenType_t len, uint8_t priority);
 uint8_t l3GetRxPktHdrSize(L3Pkt *l3Pkt, uint8_t port);
 
 uint8_t l3GetTxPktHdrSize(L3Pkt *l3Pkt, uint8_t port);
+
+void l3InitTxPkt(L3Pkt* l3Pkt);
+
+bool l3SendUdp(const UdpHdr_t* const udpHdr, uint8_t* data, uint16_t len, const uint8_t prio);
 
 #endif

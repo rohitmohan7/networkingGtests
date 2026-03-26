@@ -82,11 +82,14 @@ void l2Init() {
 	memset(l2TxPktDesc, 0x0, sizeof l2TxPktDesc);
 	//memset(maxL2Addr, 0xFF, sizeof maxL2Addr);
 	memset(l2RxPktDesc, 0x0, sizeof l2RxPktDesc);
+	
 	for (int port = 0; port < MAX_PORT; port++) {
 		l2RxPktDesc[port].abort = false;
 		if (l3AddrTblPrio[myPos][port] > 0) {
 			pitEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(SILENT_TIMER, BUS_CLK_HZ), &mstTmOut);
 		}
+
+		l3InitTxPkt(&l2TxPktDesc[port].l2TxPkt.msg.pdu);
 	}
 }
 
@@ -181,10 +184,6 @@ static inline void l2AbortTx(uint8_t port) {
 }*/
 
 bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8_t txRxFifoLen, const L2XferDir_t xfer) {
-
-	static uint8_t tx_pdu_head[L2_XFER_SIZE][MAX_PORT]; // TBD can it be moved to L4?
-	static uint8_t tx_pdu_hd_off[L2_XFER_SIZE][MAX_PORT];
-
 	uint8_t type = getPktType(&l2TxPktDesc[port].l2TxPkt);
 
 	if (idx < sizeof(L2Hdr)) { // give header
@@ -205,7 +204,7 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 	case L2_PKT_TYPE_PDU:
 
 		L3Pkt *l3Pkt = &l2TxPktDesc[port].l2TxPkt.msg.pdu;
-		const uint8_t pduHdrSize = sizeof(L2Hdr) + l3GetTxPktHdrSize(l3Pkt, port);
+		const uint8_t pduHdrSize = sizeof(L2Hdr) + sizeof(L3Hdr);
 
 		if (idx < pduHdrSize)
 		{
@@ -215,26 +214,29 @@ bool l2GetTxPkt(uint8_t port, uint8_t ** ptr, uint8_t * len, uint16_t idx, uint8
 
 			*len = pduHdrSize - idx; // reset length
 
-			return getL3PktHd(l3Pkt, &tx_pdu_head[xfer][port], &tx_pdu_hd_off[xfer][port], port);
-		} else if (tx_pdu_head[xfer][port] == INVALID_PAGE || (idx) >= RS485_FRAME_SIZE) {
-				/* CRC */
-				*ptr = ((uint8_t *)&l2TxPktDesc[port].l2TxPkt.crc);
-				*len = sizeof(L2Crc_t);
-				return true;
+			setL3PktHd(l3Pkt, port, xfer);
+			return false;
 		}
 		else
 		{
+#if 0
 			/* cap txlen */
 			if (idx + txRxFifoLen >= RS485_FRAME_SIZE) {
 				txRxFifoLen = RS485_FRAME_SIZE - idx;
 			}
+#endif
 
 			*len = getL3PktFrag(&l2TxPktDesc[port].l2TxPkt.msg.pdu,
-								ptr, (idx - pduHdrSize),
-								&tx_pdu_head[xfer][port],
-								&tx_pdu_hd_off[xfer][port],
+								ptr, (idx - sizeof(L2Hdr)),
 								txRxFifoLen,
-								port);
+								port,
+								xfer);
+
+			if (!*len) {
+				*ptr = ((uint8_t*)&l2TxPktDesc[port].l2TxPkt.crc);
+				*len = sizeof(L2Crc_t);
+				return true;
+			}
 		}
 	}
 
@@ -272,8 +274,7 @@ uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {
 	// validate message early
 	if (idx >= sizeof(l2RxPktDesc[port].l2RxPkt.hdr.addr)) {
 		if (l2RxPktDesc[port].l2RxPkt.hdr.addr && 
-			(l2RxPktDesc[port].l2RxPkt.hdr.addr != ((uint8_t)l3AddrTblPrio[myPos][port])))
-		{
+			(l2RxPktDesc[port].l2RxPkt.hdr.addr != ((uint8_t)l3AddrTblPrio[myPos][port]))) {
 			return len; // abort rx early pkt not for this dev let mst timeout retry since cannot distinguish if its due to a if due to a tx error
 		}
 	}

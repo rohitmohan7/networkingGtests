@@ -220,6 +220,7 @@ static void expectMst(MockUart& mock, uint8_t addr, UART_Type* uart, uint8_t por
 }
 
 void sendMstToken(MockUart& mock, UART_Type* UART, const uint8_t& l2Addr, const uint8_t& port) {
+    testing::InSequence seq;
     std::array<uint8_t, sizeof(L2Hdr) + sizeof(L2Crc_t)> pkt{{l2Addr, L2_PKT_TYPE_MST}};
     L2Crc_t expectCrc = crcTestContinous(0x00, pkt.data(), pkt.size() - sizeof(L2Crc_t));
     memcpy(pkt.data() + sizeof(L2Hdr), &expectCrc, sizeof(L2Crc_t));
@@ -961,7 +962,8 @@ void expectFrwdFrame(MockUart &mock,
         idx = 0;
     }
 
-    if (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG)
+    if (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG ||
+        type == TxMultiFrameType::TX_MULTI_FRAME_NEW_FRAME)
     {
         idx = 0; // zero the idx
     }
@@ -987,6 +989,7 @@ void expectFrwdFrame(MockUart &mock,
 
     size = UNIT - (size /*+ (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG ? sizeof(L4Hdr::msgLen) + sizeof(txOrder) + sizeof(L4Hdr::msgFlgs) : 0)*/);
     uint8_t len = (msgSize > size)? msgSize - size: msgSize; /*- (type != TxMultiFrameType::TX_MULTI_FRAME_CONT ? (sizeof(PduHdr)) : 0)*/;
+    uint16_t fifoSpace = (type != TxMultiFrameType::TX_MULTI_FRAME_CONT)? (UART_FIFO_SIZE - sizeof(L2Hdr) - sizeof(L3Hdr)): UART_FIFO_SIZE;
 
     for (;;)
     {
@@ -1039,9 +1042,13 @@ void expectFrwdFrame(MockUart &mock,
         }
 
         size = std::min((uint8_t)UNIT, len);
-        if (idx + size > L4_FRAME_SIZE)
+        if ((idx % fifoSpace) + size > fifoSpace)
         {
-            size = L4_FRAME_SIZE - idx;
+            size = fifoSpace - (idx % fifoSpace);
+            if (!size) {
+                break;
+            }
+
             len = 0;
         }
         else
@@ -1054,7 +1061,7 @@ void expectFrwdFrame(MockUart &mock,
     {
         sizeIn = size;
         idxIn = idx;
-        if (!(idx % L4_FRAME_SIZE) || (msgSize - idx) < UART_FIFO_SIZE)
+        if (!(idx % L3_FRAME_SIZE) || (msgSize - idx) < fifoSpace)
         {
             UART->S1 |= UART_S1_RDRF_MASK;
             UART->RCFIFO = sizeof(L2Crc_t);
@@ -1078,12 +1085,13 @@ void expectFrwdFrame(MockUart &mock,
                 // inter frame silence
                 PITCallback(port + L2_PIT_TIMER_START_IDX);
 
+#if 0
                 PduHdr hdrCpy = hdr;
-                if ((msgSize - idx) <= L4_FRAME_SIZE)
+                if ((msgSize - idx) <= L3_FRAME_SIZE)
                 {
                     hdrCpy.l2hdr.type |= L2_PKT_TYPE_MST;
                 }
-                hdrCpy.l4hdr.msgLen = (msgSize - idx) > L4_FRAME_SIZE ? (msgSize - idx) - L4_FRAME_SIZE : 0;
+                hdrCpy.l4hdr.msgLen = (msgSize - idx) > L3_FRAME_SIZE ? (msgSize - idx) - L3_FRAME_SIZE : 0;
 
                 expectFrwdFrame(mock,
                                 UART,
@@ -1096,6 +1104,7 @@ void expectFrwdFrame(MockUart &mock,
                                 hdrCpy,
                                 mstAftLstFrame,
                                 milliSeconds);
+#endif
             }
         }
         else
@@ -1118,7 +1127,7 @@ void expectFrwdFrame(MockUart &mock,
     else
     {
         UART->S1 = (uint8_t)((UART->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
-        bool frameCmplt = (!(idx % L4_FRAME_SIZE) || (msgSize - idx) < UART_FIFO_SIZE);
+        bool frameCmplt = (!(idx % L3_FRAME_SIZE) || (msgSize - idx) < fifoSpace);
 
         if (frameCmplt)
         {
@@ -1171,6 +1180,10 @@ void expectFrwdFrame(MockUart &mock,
     }
 }
 
+#define IPV4_VERSION 4
+#define IPV4_VERSION_SHIFT 4
+#define IP_MORE_FRAG_MASK 0x2000U
+
 //#if 0
 TEST_P(MultiHop, addr) {
     // check correct addr table
@@ -1186,8 +1199,6 @@ TEST_P(MultiHop, addr) {
 }
 //#endif
 
-#define IPV4_VERSION 4
-#define IPV4_VERSION_SHIFT 4
 
 TEST_P(MultiHop, udpPduRx)
 {
@@ -1317,13 +1328,6 @@ TEST_P(MultiHop, udpPduRx)
             .Times(1)
             .WillOnce(testing::Invoke([msg](uint16_t pos, const uint8_t* data, size_t len)
                 {
-                    for (int i = 0; i < len; i++) {
-                        if (data[i] != msg[i]) {
-                            std::cout << "data mismatch at idx " << i << std::endl;
-                            break;
-                        }
-                    }
-
                     ASSERT_EQ(0, std::memcmp(data, msg.data(), len));
                 }))
             .RetiresOnSaturation();
@@ -1414,8 +1418,8 @@ TEST_P(MultiHop, mstPassMsg) {
 }
 //#endif
 
-#if 0
-TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
+//#if 0
+TEST_P(MultiHop, pduUdpSend) {
 
     if (GetParam().pos != 7) {
         const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
@@ -1426,20 +1430,18 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
     g_mock = &mock;
     testing::InSequence seq;
     // construct message
-    static const int MSG_SIZE = 100;
+    static const int MSG_SIZE = L3_FRAME_SIZE - sizeof(UdpHdr_t);
     std::array<uint8_t, MSG_SIZE> msg;
     for (int i = 0; i < MSG_SIZE; i++) {
         msg[i] = i;
     }
 
-    static const int MSG2_SIZE = L4_FRAME_SIZE+1;
+    static const int MSG2_SIZE = L3_FRAME_SIZE; // will overflow to 2 ip frag Tx for sizeof(UdpHdr)
     std::array<uint8_t, MSG2_SIZE> msg2;
     for (int i = 0; i < MSG2_SIZE; i++) { // send multiframe msg
         msg2[i] = i;
     }
     uint8_t size;
-    PduHdr pduHdr{};
-
     uint8_t idx[MAX_PORT];
 
     for (int port = 0; port < MAX_PORT; port++) {
@@ -1457,21 +1459,62 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
         ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
 
         // send msg
-        appSend(msg.data(), MSG_SIZE, 1, 0, false);
-        appSend(msg2.data(), MSG2_SIZE, 1, 0, false);
+        ASSERT_EQ(appSendUdp(msg.data(), MSG_SIZE, 0, 1), true);
+        ASSERT_EQ(appSendUdp(msg2.data(), MSG2_SIZE, 0, 1), true);
 
         // send MST
         sendMstToken(mock, uart_ptrs[port], l2Addr, port);
 
         // will send message
+        L2Hdr l2Hdr = { 0x1, (L2_PKT_TYPE_PDU) };
+        UdpHdr_t udpHdr = { .srcPort = 7, .dstPort = 1, .length = MSG_SIZE };
 
-        // first expect hdr
-        pduHdr = PduHdr{
-            .l2hdr = { 0x1, L2_PKT_TYPE_PDU },
-            .l3hdr = { l3Addr, 0x101, 1, 0 },
-            .l4hdr = { 0, 0, 0 }
+       // const uint16_t fragSize = L3_FRAME_SIZE + sizeof(L2Hdr) + sizeof(L3Hdr) + sizeof(L2Crc_t);
+        const uint16_t fragSize = L3_FRAME_SIZE;
+
+        std::array<uint8_t, fragSize> pktFrag1;
+
+        //memcpy(pktFrag1.data(), &l2Hdr, sizeof(L2Hdr));
+
+        L3Hdr l3Hdr = { .verIhl = (uint8_t)((IPV4_VERSION << IPV4_VERSION_SHIFT) | (sizeof(L3Hdr) >> 2U)),
+                        .prio = 0,
+                        .totalLen = sizeof(L3Hdr) + L3_FRAME_SIZE,
+                        .fragId = 1,
+                        .fragOfst = 0,
+                        .ttl = 1,
+                        .proto = IP_PROTO_UDP,
+                        .src = l3Addr,
+                        .dst = 0x101
         };
 
+        PduHdr pduHdr{
+            .l2hdr = l2Hdr,
+            .l3hdr = l3Hdr
+        };
+
+        //memcpy(pktFrag1.data() + sizeof(L2Hdr), &l3Hdr, sizeof(L3Hdr));
+        memcpy(pktFrag1.data(), &udpHdr, sizeof(UdpHdr_t));
+        memcpy(pktFrag1.data() + sizeof(UdpHdr_t), msg.data(), (L3_FRAME_SIZE - sizeof(UdpHdr_t)));
+
+#if 0
+        L2Crc_t expectCrc = crcTestContinous(0x00,
+            pktFrag1.data(),
+            pktFrag1.size() - sizeof(L2Crc_t));
+        std::memcpy(pktFrag1.data() + pktFrag1.size() - sizeof(L2Crc_t),
+            &expectCrc,
+            sizeof(L2Crc_t));
+#endif
+        
+        expectFrwdFrame(mock,
+            uart_ptrs[port],
+            port,
+            idx[port],
+            size,
+            TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
+            (pktFrag1.data()),
+            (pktFrag1.size()), /* L4 hdr is part of page buffer */
+            pduHdr);
+#if 0
         expectTxMultiFrame(mock,
             uart_ptrs[port],
             port,
@@ -1481,23 +1524,53 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
             msg.data(),
             msg.size(),
             pduHdr);
-
+#endif
         // inter frame silence
         PITCallback(port + L2_PIT_TIMER_START_IDX);
 
-        pduHdr.l4hdr = L4Hdr{ 1, 0, 1 };
+        //pduHdr.l4hdr = L4Hdr{ 1, 0, 1 };
+        pduHdr.l3hdr.fragId = 2;
+        pduHdr.l3hdr.fragOfst |= IP_MORE_FRAG_MASK;
+
+        udpHdr.length = MSG2_SIZE;
+
+        memcpy(pktFrag1.data(), &udpHdr, sizeof(UdpHdr_t));
+        memcpy(pktFrag1.data() + sizeof(UdpHdr_t), msg2.data(), (L3_FRAME_SIZE - sizeof(UdpHdr_t)));
 
         // expect msg size single frame
-        expectTxMultiFrame(mock,
+         expectFrwdFrame(mock,
             uart_ptrs[port],
             port,
             idx[port],
             size,
-            TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG,
-            msg2.data(),
-            msg2.size(),
-            pduHdr,
-            true);
+            TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
+            (pktFrag1.data()),
+            (pktFrag1.size()), /* L4 hdr is part of page buffer */
+            pduHdr);
+
+         /* Expect Frag 2 Cont */
+         pduHdr.l3hdr.fragOfst = (L3_FRAME_SIZE >> 3); // last frag 
+
+         uint16_t prevTxLen = (L3_FRAME_SIZE - sizeof(UdpHdr_t));
+         uint16_t payloadLen = (msg2.size() - prevTxLen);
+         pduHdr.l3hdr.totalLen = sizeof(L3Hdr) + payloadLen;
+
+         memcpy(pktFrag1.data(), msg2.data() + prevTxLen, payloadLen);
+
+         pduHdr.l2hdr.type |= L2_PKT_TYPE_MST; // will pass token
+
+         // inter frame silence
+         PITCallback(port + L2_PIT_TIMER_START_IDX);
+
+         expectFrwdFrame(mock,
+             uart_ptrs[port],
+             port,
+             idx[port],
+             size,
+             TxMultiFrameType::TX_MULTI_FRAME_NEW_FRAME,
+             (pktFrag1.data()),
+             (payloadLen), /* L4 hdr is part of page buffer */
+             pduHdr);
     }
 
     ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
@@ -1507,398 +1580,7 @@ TEST_P(MultiHop, pduNoHopSingleFrameNoRetry) {
 #define MAX_L4_RETRY 3
 #define L4_RETRY_TIMER 100 // 100 ms
 
-//#if 0
-TEST_P(MultiHop, pduNoHopSingleFrameRetryNoAck) {
-    if (GetParam().pos != 7) {
-        const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
-        GTEST_SKIP() << "pos " << GetParam().pos << " test " << info->name() << " TODO";
-    }
 
-    MockUart mock;
-    g_mock = &mock;
-    testing::InSequence seq;
-    // construct message
-    static const int MSG_SIZE = 100;
-    std::array<uint8_t, MSG_SIZE> msg;
-    for (int i = 0; i < MSG_SIZE; i++) {
-        msg[i] = i;
-    }
-
-    static const int MSG2_SIZE = L4_FRAME_SIZE + 1;
-    std::array<uint8_t, MSG2_SIZE> msg2;
-    for (int i = 0; i < MSG2_SIZE; i++) { // send multiframe msg
-        msg2[i] = i;
-    }
-    uint8_t size;
-    PduHdr pduHdr{};
-
-    uint8_t idx[MAX_PORT];
-    uint32_t milliSeconds = 0;
-
-    for (int port = 0; port < MAX_PORT; port++) {
-
-        // confirm UART TX is disabled
-        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
-
-        uint16_t l3Addr = GetParam().l3AddrTblPrio[GetParam().pos][port];
-        uint8_t l2Addr = (l3Addr & 0x00FF);
-        if (l2Addr == 0 /* ||
-               portsTested[port]*/) {
-            continue;
-        }
-
-        // confirm RX is enabled
-        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
-
-        // send msg
-        appSend(msg.data(), MSG_SIZE, 1, 0, true);
-        appSend(msg2.data(), MSG2_SIZE, 1, 0, true);
-
-        // send MST
-        sendMstToken(mock, uart_ptrs[port], l2Addr, port);
-
-        // will send message
-
-        // first expect hdr
-        pduHdr = PduHdr{
-            .l2hdr = { 0x1, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST) },
-            .l3hdr = { l3Addr, 0x101, 1, 0 },
-            .l4hdr = { 0, L4_MSG_FLAG_REQ_ACK, 0 }
-        };
-
-        uint8_t sizePrev = size;
-        uint8_t idxPrev = idx[port];
-
-        for (int retry = 0; retry <= MAX_L4_RETRY; retry++) {
-            expectTxMultiFrame(mock,
-                uart_ptrs[port],
-                port,
-                idx[port],
-                size,
-                TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-                msg.data(),
-                msg.size(),
-                pduHdr,
-                true,
-                milliSeconds);
-
-            // mst timeout silence
-            milliSeconds += L4_RETRY_TIMER + 1;
-
-            EXPECT_CALL(mock, pitGetCurrMS())
-                .Times(1)
-                .WillOnce(testing::Return(milliSeconds))
-                .RetiresOnSaturation();
-
-            PITCallback(port + L2_PIT_TIMER_START_IDX);
-
-            if (retry < MAX_L4_RETRY) {
-                size = sizePrev;
-                idx[port] = idxPrev;
-            }
-        }
-        sizePrev = size;
-        idxPrev = idx[port];
-        pduHdr.l2hdr.type &= ~L2_PKT_TYPE_MST; // will be set on last frame of message
-        pduHdr.l4hdr = L4Hdr{ 1, L4_MSG_FLAG_REQ_ACK, 1 };
-        // message is dropped and move to next message
-        for (int retry = 0; retry <= MAX_L4_RETRY; retry++) {
-            // expect msg size single frame
-            expectTxMultiFrame(mock,
-                uart_ptrs[port],
-                port,
-                idx[port],
-                size,
-                TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG,
-                msg2.data(),
-                msg2.size(),
-                pduHdr,
-                true,
-                milliSeconds);
-
-            // mst timeout silence
-            milliSeconds += L4_RETRY_TIMER + 1;
-
-            EXPECT_CALL(mock, pitGetCurrMS())
-                .Times(1)
-                .WillOnce(testing::Return(milliSeconds))
-                .RetiresOnSaturation();
-
-            PITCallback(port + L2_PIT_TIMER_START_IDX); // mst timeout
-
-            size = sizePrev;
-            idx[port] = idxPrev;
-        }
-    }
-
-    ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
-}
-//#endif
-
-//#if 0
-TEST_P(MultiHop, pduNoHopAck)
-{
-    if (GetParam().pos != 7) {
-        const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
-        GTEST_SKIP() << "pos " << GetParam().pos << " test " << info->name() << " TODO";
-    }
-
-    MockUart mock;
-    g_mock = &mock;
-    testing::InSequence seq;
-    // construct message
-    static const int MSG_SIZE = 100;
-    std::array<uint8_t, MSG_SIZE> msg;
-    for (int i = 0; i < MSG_SIZE; i++)
-    {
-        msg[i] = i;
-    }
-
-    static const int MSG2_SIZE = L4_FRAME_SIZE + 1;
-    std::array<uint8_t, MSG2_SIZE> msg2;
-    for (int i = 0; i < MSG2_SIZE; i++)
-    { // send multiframe msg
-        msg2[i] = i;
-    }
-    uint8_t size;
-    PduHdr pduHdr{};
-
-    uint8_t idx[MAX_PORT];
-    uint32_t milliSeconds = 0;
-
-    for (int port = 0; port < MAX_PORT; port++)
-    {
-
-        // confirm UART TX is disabled
-        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
-
-        uint16_t l3Addr = GetParam().l3AddrTblPrio[GetParam().pos][port];
-        uint8_t l2Addr = (l3Addr & 0x00FF);
-        if (l2Addr == 0)
-        {
-            continue;
-        }
-
-        // confirm RX is enabled
-        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
-
-        // send msg
-        appSend(msg.data(), MSG_SIZE, 1, 0, true);
-        appSend(msg2.data(), MSG2_SIZE, 1, 0, true);
-
-        // send MST
-        sendMstToken(mock, uart_ptrs[port], l2Addr, port);
-
-        // will send message
-
-        // first expect hdr
-        pduHdr = PduHdr{
-            .l2hdr = {0x1, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST)},
-            .l3hdr = {l3Addr, 0x101, 1, 0},
-            .l4hdr = {0, L4_MSG_FLAG_REQ_ACK, 0}};
-
-        uint8_t sizePrev = size;
-        uint8_t idxPrev = idx[port];
-
-        expectTxMultiFrame(mock,
-                           uart_ptrs[port],
-                           port,
-                           idx[port],
-                           size,
-                           TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-                           msg.data(),
-                           msg.size(),
-                           pduHdr,
-                           true,
-                           milliSeconds);
-
-        PduHdr pduAck = PduHdr{
-            .l2hdr = {0x3, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST)},
-            .l3hdr = {0x101, l3Addr, 1, 0},
-            .l4hdr = {0, L4_MSG_FLAG_TYPE_ACK, 0}};
-
-        // send ack
-        sendMsgAck(mock, uart_ptrs[port], pduAck, port);
-
-        pduHdr.l2hdr.type &= ~L2_PKT_TYPE_MST; // will be set on last frame of message
-        pduHdr.l4hdr = L4Hdr{1, L4_MSG_FLAG_REQ_ACK, 1};
-        // message is dropped and move to next message
-
-        // expect msg size single frame
-        expectTxMultiFrame(mock,
-                           uart_ptrs[port],
-                           port,
-                           idx[port],
-                           size,
-                           TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG,
-                           msg2.data(),
-                           msg2.size(),
-                           pduHdr,
-                           true,
-                           milliSeconds);
-
-        pduAck.l4hdr.msgNo++;
-        sendMsgAck(mock, uart_ptrs[port], pduAck, port);
-    }
-
-    ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
-}
-//#endif
-
-//#if 0
-TEST_P(MultiHop, pduNoHopRx)
-{
-    if (GetParam().pos != 7) {
-        const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
-        GTEST_SKIP() << "pos " << GetParam().pos << " test " << info->name() << " TODO";
-    }
-
-    MockUart mock;
-    g_mock = &mock;
-    testing::InSequence seq;
-    // construct message
-    static const int MSG_SIZE = 100;
-    std::array<uint8_t, MSG_SIZE> msg;
-    for (int i = 0; i < MSG_SIZE; i++)
-    {
-        msg[i] = i;
-    }
-
-    static const int MSG2_SIZE = L4_FRAME_SIZE + 1;
-    std::array<uint8_t, MSG2_SIZE> msg2;
-    for (int i = 0; i < MSG2_SIZE; i++)
-    { // send multiframe msg
-        msg2[i] = i;
-    }
-    uint8_t size;
-    PduHdr pduHdr{};
-
-    uint8_t idx[MAX_PORT];
-    uint32_t milliSeconds = 0;
-
-    for (int port = 0; port < MAX_PORT; port++)
-    {
-
-        // confirm UART TX is disabled
-        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
-
-        uint16_t l3Addr = GetParam().l3AddrTblPrio[GetParam().pos][port];
-        uint8_t l2Addr = (l3Addr & 0x00FF);
-        if (l2Addr == 0 /* ||
-               portsTested[port]*/
-        )
-        {
-            continue;
-        }
-
-        // confirm RX is enabled
-        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
-
-        uint8_t rxPgOfst = 0;
-
-        PduHdr pduHdr = PduHdr{
-            .l2hdr = {0x3, (L2_PKT_TYPE_PDU)},
-            .l3hdr = {0x101, l3Addr, 1, 0},
-            .l4hdr = {0, 0, 0}};
-
-        memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
-        
-        // give crc
-        L2Crc_t expectCrc = crcTestContinous(0x00,
-                                             msg.data(),
-                                             msg.size() - sizeof(L2Crc_t));
-
-        std::memcpy(msg.data() + msg.size() - sizeof(L2Crc_t),
-                    &expectCrc,
-                    sizeof(L2Crc_t));
-
-        // send msg
-        sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
-                   msg.size(), port);
-    }
-    ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
-}
-//#endif
-
-//#if 0
-TEST_P(MultiHop, pduNoHopRxAck)
-{
-    if (GetParam().pos != 7) {
-        const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
-        GTEST_SKIP() << "pos " << GetParam().pos << " test " << info->name() << " TODO";
-    }
-
-    MockUart mock;
-    g_mock = &mock;
-    testing::InSequence seq;
-    // construct message
-    static const int MSG_SIZE = 100;
-    std::array<uint8_t, MSG_SIZE> msg;
-    for (int i = 0; i < MSG_SIZE; i++)
-    {
-        msg[i] = i;
-    }
-
-    static const int MSG2_SIZE = L4_FRAME_SIZE + 1;
-    std::array<uint8_t, MSG2_SIZE> msg2;
-    for (int i = 0; i < MSG2_SIZE; i++)
-    { // send multiframe msg
-        msg2[i] = i;
-    }
-    uint8_t size;
-    PduHdr pduHdr{};
-
-    uint8_t idx[MAX_PORT];
-    uint32_t milliSeconds = 0;
-
-    for (int port = 0; port < MAX_PORT; port++)
-    {
-
-        // confirm UART TX is disabled
-        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
-
-        uint16_t l3Addr = GetParam().l3AddrTblPrio[GetParam().pos][port];
-        uint8_t l2Addr = (l3Addr & 0x00FF);
-        if (l2Addr == 0)
-        {
-            continue;
-        }
-
-        // confirm RX is enabled
-        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
-
-        uint8_t rxPgOfst = 0;
-
-        PduHdr pduHdr = PduHdr{
-            .l2hdr = {0x3, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST)},
-            .l3hdr = {0x101, l3Addr, 1, 0},
-            .l4hdr = {0, L4_MSG_FLAG_REQ_ACK, 0}};
-
-        memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
-
-        // give crc
-        L2Crc_t expectCrc = crcTestContinous(0x00,
-                                             msg.data(),
-                                             msg.size() - sizeof(L2Crc_t));
-
-        std::memcpy(msg.data() + msg.size() - sizeof(L2Crc_t),
-                    &expectCrc,
-                    sizeof(L2Crc_t));
-
-        // send msg
-        sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
-                   msg.size(), port);
-
-        PduHdr pduAck = PduHdr{
-            .l2hdr = {0x1, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST)},
-            .l3hdr = {l3Addr, 0x101, 1, 0},
-            .l4hdr = {0, L4_MSG_FLAG_TYPE_ACK, 0}};
-
-        expectHdrMsg(mock, &uart_objs[port], pduAck, port);
-    }
-    ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
-}
-#endif
 
 //#if 0
 TEST_P(MultiHop, pduHopFrwd)
@@ -2001,9 +1683,11 @@ TEST_P(MultiHop, pduHopFrwd)
 
             uint8_t rxPgOfst = 0; // page will have L4 Hdr
 
+            const uint16_t l3TotalSize = msg.size() - sizeof(L2Hdr) - sizeof(L2Crc_t);
+
             PduHdr pduHdr = PduHdr{
                 .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU)},
-                .l3hdr = {.prio = 0, .ttl = 2, .src = l3SrcAddr, .dst = l3DstAddr },
+                .l3hdr = {.prio = 0, .totalLen = l3TotalSize, .ttl = 2, .src = l3SrcAddr, .dst = l3DstAddr },
                 .l4hdr = {0, 0, 0}};
 
             memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
@@ -2029,7 +1713,7 @@ TEST_P(MultiHop, pduHopFrwd)
             // first expect hdr
             pduHdr = PduHdr{
                 .l2hdr = {l3DstAddr, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST)},
-                .l3hdr = {.prio = 0, .ttl = 1, .src = l3SrcAddr, .dst = l3DstAddr },
+                .l3hdr = {.prio = 0, .totalLen = l3TotalSize, .ttl = 1, .src = l3SrcAddr, .dst = l3DstAddr },
                 .l4hdr = {0, 0, 0}};
 
             uint8_t size;
@@ -2059,7 +1743,7 @@ TEST_P(MultiHop, pduHopFrwd)
 
                     PduHdr pduHdr = PduHdr{
                         .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU)},
-                        .l3hdr = {.prio = 0, .ttl = 2, .src = l3SrcAddr, .dst = l3DstAddr },
+                        .l3hdr = {.prio = 0, .totalLen = l3TotalSize, .ttl = 2, .src = l3SrcAddr, .dst = l3DstAddr },
                         .l4hdr = {0, 0, 0}};
 
                     memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
@@ -2085,7 +1769,7 @@ TEST_P(MultiHop, pduHopFrwd)
                     // first expect hdr
                     pduHdr = PduHdr{
                         .l2hdr = {GetParam().l3RouteTable[subnet], (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST)},
-                        .l3hdr = {.prio = 0, .ttl = 1, .src = l3SrcAddr, .dst = l3DstAddr },
+                        .l3hdr = {.prio = 0, .totalLen = l3TotalSize, .ttl = 1, .src = l3SrcAddr, .dst = l3DstAddr },
                         .l4hdr = {0, 0, 0}};
 
                     uint8_t size;
@@ -2112,10 +1796,10 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
 {
     MockUart mock;
     g_mock = &mock;
-    testing::InSequence seq;
+    //testing::InSequence seq;
     // construct message
-    static const int MSG_SIZE = 100;
-    std::array<uint8_t, MSG_SIZE + sizeof(L2Crc_t)> msg;
+    static const int MSG_SIZE = L3_FRAME_SIZE - sizeof(UdpHdr_t);
+    std::array<uint8_t, MSG_SIZE> msg;
     for (int i = 0; i < MSG_SIZE; i++)
     {
         msg[i] = i;
@@ -2140,8 +1824,9 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
 
         ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
 
-
-        /* Packet arriving in this port should forward to other port */
+        uint16_t l3SrcAddr = 0;
+        int pos = 0;
+        /* Find atleast one port that can forward the broadcast */
         for (int port2 = 0; port2 < MAX_PORT; port2++)
         {
             if (port == port2)
@@ -2160,16 +1845,16 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
             // confirm RX is enabled
             ASSERT_EQ((uart_objs[port2].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
 
-            uint16_t l3SrcAddr = 0;
-
-            for (int pos = 0; pos < MAX_POS; pos++)
+            
+            
+            for (; pos < MAX_POS; pos++)
             {
                 // find a dst dev on port to forward
                 if (pos == GetParam().pos)
                 {
                     continue;
                 }
-                
+
                 /* check brdcst table*/
                 if (GetParam().l3BcastInSubnetForSrcPort[pos][port2] != portSubnet)
                 {
@@ -2185,7 +1870,7 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
                         break;
                     }
                 }
-                
+
                 //
 
                 if (l3SrcAddr)
@@ -2194,47 +1879,107 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
                 }
             }
 
-            if (!l3SrcAddr) {
+        }
+
+        if (!l3SrcAddr) {
+            continue;
+        }
+
+        uint16_t l3DstAddr = 0;
+        uint8_t rxPgOfst = 0; // page will have L4 Hdr
+
+         L2Hdr l2Hdr = { 0x00, (L2_PKT_TYPE_PDU) };
+
+         L3Hdr l3Hdr = { .verIhl = (uint8_t)((IPV4_VERSION << IPV4_VERSION_SHIFT) | (sizeof(L3Hdr) >> 2U)),
+                   .prio = 0,
+                   .totalLen = sizeof(L3Hdr) + L3_FRAME_SIZE,
+                   .fragId = 1,
+                   .fragOfst = 0,
+                   .ttl = 2,
+                   .proto = IP_PROTO_UDP,
+                   .src = l3SrcAddr,
+                   .dst = 0x0000
+        };
+
+        PduHdr pduHdr{
+            .l2hdr = l2Hdr,
+            .l3hdr = l3Hdr
+        };
+
+        UdpHdr_t udpHdr = { .srcPort = pos, .dstPort = 0, .length = MSG_SIZE };
+
+        const uint16_t fragSize = L3_FRAME_SIZE + sizeof(L2Hdr) + sizeof(L3Hdr) + sizeof(L2Crc_t);
+        std::array<uint8_t, fragSize> pktFrag1;
+
+        memcpy(pktFrag1.data(), &l2Hdr, sizeof(L2Hdr));
+        memcpy(pktFrag1.data() + sizeof(L2Hdr), &l3Hdr, sizeof(L3Hdr));
+        memcpy(pktFrag1.data() + sizeof(L2Hdr) + sizeof(L3Hdr), &udpHdr, sizeof(UdpHdr_t));
+        memcpy(pktFrag1.data() + sizeof(L2Hdr) + sizeof(L3Hdr) + sizeof(UdpHdr_t), msg.data(), (L3_FRAME_SIZE - sizeof(UdpHdr_t)));
+
+        L2Crc_t expectCrc = crcTestContinous(0x00,
+            pktFrag1.data(),
+            pktFrag1.size() - sizeof(L2Crc_t));
+        std::memcpy(pktFrag1.data() + pktFrag1.size() - sizeof(L2Crc_t),
+            &expectCrc,
+            sizeof(L2Crc_t));
+
+        EXPECT_CALL(mock, pitGetCurrMS())
+            .Times(1)
+            .WillOnce(testing::Return(0))
+            .RetiresOnSaturation();
+
+#ifdef NETWORK_ISR_RECV
+        EXPECT_CALL(mock, appRecv(pos, testing::NotNull(), msg.size()))
+            .Times(1)
+            .WillOnce(testing::Invoke([msg](uint16_t pos, const uint8_t* data, size_t len)
+                {
+                    ASSERT_EQ(0, std::memcmp(data, msg.data(), len));
+                }))
+            .RetiresOnSaturation();
+#endif
+
+        // send msg to port 1
+        sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag1.data(),
+            pktFrag1.size(), port, true);
+
+        /* make sure the freed mem is reset so its not using prev memory */
+        uint8_t currHd = g_free_head;
+        while (currHd != INVALID_PAGE) {
+            const uint16_t base = pageOff(currHd);
+            memset(&g_pool[base], 0x00, UNIT);
+            currHd = g_next[currHd];
+        }
+
+        for (int port2 = 0; port2 < MAX_PORT; port2++)
+        {
+            if (port == port2)
+            {
                 continue;
             }
 
-            uint16_t l3DstAddr = 0;
-            uint8_t rxPgOfst = 0; // page will have L4 Hdr
+            if (GetParam().l3BcastInSubnetForSrcPort[pos][port2] != portSubnet)
+            {
+                continue;
+            }
 
-            PduHdr pduHdr = PduHdr{
-                .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU)},
-                .l3hdr = {.prio = 0, .ttl = 2, .src = l3SrcAddr, .dst = l3DstAddr },
-                .l4hdr = {0, 0, 0}};
+            uint16_t l3Addr2 = GetParam().l3AddrTblPrio[GetParam().pos][port2];
+            uint8_t l2Addr2 = (l3Addr2 & 0x00FF);
 
-            memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
-
-            // give crc
-            L2Crc_t expectCrc = crcTestContinous(0x00,
-                                                 msg.data(),
-                                                 msg.size() - sizeof(L2Crc_t));
-
-            std::memcpy(msg.data() + msg.size() - sizeof(L2Crc_t),
-                        &expectCrc,
-                        sizeof(L2Crc_t));
-
-            // send msg to port 1
-            sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
-                       msg.size(), port, true);
+            if (l2Addr2 == 0 || GetParam().devCnt[port] <= 1) // TODO what if in debug if we keep addr
+            {
+                continue;
+            }
 
             // send MST to port 2
             sendMstToken(mock, uart_ptrs[port2], l2Addr2, port2);
 
             // will send message
 
-            // first expect hdr
-            pduHdr = PduHdr{
-                .l2hdr = {l3DstAddr, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST)},
-                .l3hdr = {.prio = 0, .ttl = 1, .src = l3SrcAddr, .dst = l3DstAddr },
-                .l4hdr = {0, 0, 0}};
+            // first expect 
+            pduHdr.l2hdr.type |= L2_PKT_TYPE_MST;
+            pduHdr.l3hdr.ttl = 1;
 
             uint8_t size;
-
-            /* TODO L4 Hdr */
 
             expectFrwdFrame(mock,
                             uart_ptrs[port2],
@@ -2242,8 +1987,8 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
                             idx[port2],
                             size,
                             TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-                            (msg.data() + (sizeof(L3Hdr) + sizeof(L2Hdr))),
-                            (MSG_SIZE - (sizeof(L3Hdr) + sizeof(L2Hdr))), /* L4 hdr is part of page buffer */
+                            (pktFrag1.data() + sizeof(L2Hdr) + sizeof(L3Hdr)),
+                            (pktFrag1.size() - (sizeof(L2Hdr) + sizeof(L3Hdr) + sizeof(L2Crc_t))), /* L4 hdr is part of page buffer */
                             pduHdr);
         }
     }
@@ -2251,35 +1996,39 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
 }
 //#endif
 
-#if 0
-TEST_P(MultiHop, pduBrdCst) {
+//#if 0
+TEST_P(MultiHop, pduUdpBrdCstSend) {
     MockUart mock;
     g_mock = &mock;
     testing::InSequence seq;
     // construct message
-    static const int MSG_SIZE = 100;
+    static const int MSG_SIZE = L3_FRAME_SIZE - sizeof(UdpHdr_t);
     std::array<uint8_t, MSG_SIZE> msg;
     for (int i = 0; i < MSG_SIZE; i++) {
         msg[i] = i;
     }
 
-    static const int MSG2_SIZE = L4_FRAME_SIZE + 1;
+    static const int MSG2_SIZE = L3_FRAME_SIZE; // will overflow to 2 ip frag Tx for sizeof(UdpHdr)
     std::array<uint8_t, MSG2_SIZE> msg2;
     for (int i = 0; i < MSG2_SIZE; i++) { // send multiframe msg
         msg2[i] = i;
     }
     uint8_t size;
-    PduHdr pduHdr{};
-
     uint8_t idx[MAX_PORT];
 
-    // send msg
-    appBrdcast(msg.data(), MSG_SIZE, 0);
+    // send brdcast msg
+    ASSERT_EQ(appSendUdp(msg.data(), MSG_SIZE, 0, 0), true);
+    ASSERT_EQ(appSendUdp(msg2.data(), MSG2_SIZE, 0, 0), true);
 
-    /* Test all ports brodcast message */
-
+    uint8_t activePortCnt = 0;
     for (int port = 0; port < MAX_PORT; port++) {
-
+        if (GetParam().l3AddrTblPrio[GetParam().pos][port]) {
+            activePortCnt++;
+        }
+    }
+    
+    for (int port = 0; port < MAX_PORT; port++) {
+        uint8_t fragid = port + 1;
         // confirm UART TX is disabled
         ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
         uint16_t l3Addr = GetParam().l3AddrTblPrio[GetParam().pos][port];
@@ -2292,174 +2041,113 @@ TEST_P(MultiHop, pduBrdCst) {
         // confirm RX is enabled
         ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
 
-        //appSend(msg2.data(), MSG2_SIZE, 1, 0, false);
-
+       
         // send MST
         sendMstToken(mock, uart_ptrs[port], l2Addr, port);
 
         // will send message
+        L2Hdr l2Hdr = { 0x00, (L2_PKT_TYPE_PDU) };
+        UdpHdr_t udpHdr = { .srcPort = myPos, .dstPort = 0, .length = MSG_SIZE };
 
-        // first expect hdr
-        pduHdr = PduHdr{
-            .l2hdr = { 0x00, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST) },
-            .l3hdr = { l3Addr, 0x0000, 1, 0 },
-            .l4hdr = { 0, 0, 0 }
+        // const uint16_t fragSize = L3_FRAME_SIZE + sizeof(L2Hdr) + sizeof(L3Hdr) + sizeof(L2Crc_t);
+        const uint16_t fragSize = L3_FRAME_SIZE;
+
+        std::array<uint8_t, fragSize> pktFrag1;
+
+        //memcpy(pktFrag1.data(), &l2Hdr, sizeof(L2Hdr));
+
+        L3Hdr l3Hdr = { .verIhl = (uint8_t)((IPV4_VERSION << IPV4_VERSION_SHIFT) | (sizeof(L3Hdr) >> 2U)),
+                        .prio = 0,
+                        .totalLen = sizeof(L3Hdr) + L3_FRAME_SIZE,
+                        .fragId = fragid,
+                        .fragOfst = 0,
+                        .ttl = l3MaxHops + 1,
+                        .proto = IP_PROTO_UDP,
+                        .src = l3Addr,
+                        .dst = 0x0000
         };
 
-        expectTxMultiFrame(mock,
+        PduHdr pduHdr{
+            .l2hdr = l2Hdr,
+            .l3hdr = l3Hdr
+        };
+
+        //memcpy(pktFrag1.data() + sizeof(L2Hdr), &l3Hdr, sizeof(L3Hdr));
+        memcpy(pktFrag1.data(), &udpHdr, sizeof(UdpHdr_t));
+        memcpy(pktFrag1.data() + sizeof(UdpHdr_t), msg.data(), (L3_FRAME_SIZE - sizeof(UdpHdr_t)));
+
+        expectFrwdFrame(mock,
             uart_ptrs[port],
             port,
             idx[port],
             size,
             TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-            msg.data(),
-            msg.size(),
+            (pktFrag1.data()),
+            (pktFrag1.size()), /* L4 hdr is part of page buffer */
             pduHdr);
-    }
 
-    /* confirm all pages are free */
-    ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
+        // inter frame silence
+        PITCallback(port + L2_PIT_TIMER_START_IDX);
 
-    appBrdcast(msg2.data(), MSG2_SIZE, 0); /* broadcast multiframe message */
+        //pduHdr.l4hdr = L4Hdr{ 1, 0, 1 };
+        /* since its sent to all ports fragid will increment by MAX_PORT*/
+        fragid += (activePortCnt);
 
-    uint8_t port;
-    uint16_t l3AddrPrev;
+        pduHdr.l3hdr.fragId = fragid;
+        pduHdr.l3hdr.fragOfst |= IP_MORE_FRAG_MASK;
 
-    for (port = 0; port < MAX_PORT; port++) {
+        udpHdr.length = MSG2_SIZE;
 
-        // confirm UART TX is disabled
-        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
-        uint16_t l3Addr = GetParam().l3AddrTblPrio[GetParam().pos][port];
-        uint8_t l2Addr = (l3Addr & 0x00FF);
-        if (l2Addr == 0 /* ||
-               portsTested[port]*/) {
-            continue;
-        }
+        memcpy(pktFrag1.data(), &udpHdr, sizeof(UdpHdr_t));
+        memcpy(pktFrag1.data() + sizeof(UdpHdr_t), msg2.data(), (L3_FRAME_SIZE - sizeof(UdpHdr_t)));
 
-        // confirm RX is enabled
-        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
-
-        //appSend(msg2.data(), MSG2_SIZE, 1, 0, false);
-
-        // send MST
-        sendMstToken(mock, uart_ptrs[port], l2Addr, port);
-
-        // will send message
-
-        // first expect hdr
-        pduHdr = PduHdr{
-            .l2hdr = { 0x00, (L2_PKT_TYPE_PDU) },
-            .l3hdr = { l3Addr, 0x0000, 1, 0 },
-            .l4hdr = { 0, 0, 0 }
-        };
-
-        expectTxMultiFrame(mock,
+        // expect msg size single frame
+        expectFrwdFrame(mock,
             uart_ptrs[port],
             port,
             idx[port],
             size,
             TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-            msg2.data(),
-            msg2.size(),
+            (pktFrag1.data()),
+            (pktFrag1.size()), /* L4 hdr is part of page buffer */
             pduHdr);
 
-        l3AddrPrev = l3Addr;
-        break;
-    }
-    // send another brodcast msg becore the other ports have sent broadcast message 
-    appBrdcast(msg.data(), MSG_SIZE, 0); /* broadcast multiframe message */
-    uint8_t prevPort = port;
-    bool peerPortAvail = false;
+        /* Expect Frag 2 Cont */
+        pduHdr.l3hdr.fragOfst = (L3_FRAME_SIZE >> 3); // last frag 
 
-    for (port = 0; port < MAX_PORT; port++) {
-        if (port == prevPort) {
-            continue;
-        }
+        uint16_t prevTxLen = (L3_FRAME_SIZE - sizeof(UdpHdr_t));
+        uint16_t payloadLen = (msg2.size() - prevTxLen);
+        pduHdr.l3hdr.totalLen = sizeof(L3Hdr) + payloadLen;
 
-        // confirm UART TX is disabled
-        ASSERT_NE((uart_objs[port].C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
-        uint16_t l3Addr = GetParam().l3AddrTblPrio[GetParam().pos][port];
-        uint8_t l2Addr = (l3Addr & 0x00FF);
-        if (l2Addr == 0 /* ||
-               portsTested[port]*/) {
-            continue;
-        }
+        memcpy(pktFrag1.data(), msg2.data() + prevTxLen, payloadLen);
 
-        // confirm RX is enabled
-        ASSERT_EQ((uart_objs[port].C2 & (UART_C2_RE_MASK | UART_C2_RIE_MASK)) != 0, true);
-        peerPortAvail = true;
-        //appSend(msg2.data(), MSG2_SIZE, 1, 0, false);
+        pduHdr.l2hdr.type |= L2_PKT_TYPE_MST; // will pass token
 
-        // send MST
-        sendMstToken(mock, uart_ptrs[port], l2Addr, port);
+        // inter frame silence
+        PITCallback(port + L2_PIT_TIMER_START_IDX);
 
-        // will send message
-
-        // first expect hdr
-        pduHdr = PduHdr{
-            .l2hdr = { 0x00, (L2_PKT_TYPE_PDU) },
-            .l3hdr = { l3Addr, 0x0000, 1, 0 },
-            .l4hdr = { 0, 0, 0 }
-        };
-
-        expectTxMultiFrame(mock,
+        expectFrwdFrame(mock,
             uart_ptrs[port],
             port,
             idx[port],
             size,
-            TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG,
-            msg2.data(),
-            msg2.size(),
-            pduHdr,
-            false);
-
-        size = UNIT - (8 + sizeof(txOrder) + sizeof(MsgLenType_t)); // TODO check why expectTxMultiFrame above is not setting size properly?
-        //size += sizeof(txOrder) + sizeof(uint8_t);
-        PITCallback(port + L2_PIT_TIMER_START_IDX); // interframe silence
-
-        pduHdr.l2hdr.type |= L2_PKT_TYPE_MST;
-
-        expectTxMultiFrame(mock,
-            uart_ptrs[port],
-            port,
-            idx[port],
-            size,
-            TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG,
-            msg.data(),
-            msg.size(),
+            TxMultiFrameType::TX_MULTI_FRAME_NEW_FRAME,
+            (pktFrag1.data()),
+            (payloadLen), /* L4 hdr is part of page buffer */
             pduHdr);
+
+        /* make sure the freed mem is reset so its not using prev memory */
+        uint8_t currHd = g_free_head;
+        while (currHd != INVALID_PAGE) {
+            const uint16_t base = pageOff(currHd);
+            memset(&g_pool[base], 0x00, UNIT);
+            currHd = g_next[currHd];
+        }
     }
 
-    /* Check if first port sends next brdcast message */
-    port = prevPort;
-
-    // first expect hdr
-    pduHdr = PduHdr{
-        .l2hdr = { 0x00, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST) },
-        .l3hdr = { l3AddrPrev, 0x0000, 1, 0 },
-        .l4hdr = { 0, 0, 0 }
-    };
-
-    sendMstToken(mock, uart_ptrs[port], (l3AddrPrev & 0x00FF), port);
-
-    size = UNIT - (8 + sizeof(txOrder) + sizeof(MsgLenType_t)); // TODO check
-
-    expectTxMultiFrame(mock,
-        uart_ptrs[port],
-        port,
-        idx[port],
-        size,
-        (peerPortAvail? TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG: 
-            TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG),
-        msg.data(),
-        msg.size(),
-        pduHdr);
-
-    /*confirm all pages are free */
     ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
 }
-#endif
-
+//#endif
 // route tables
 static constexpr std::array<uint16_t, MAX_SUBNET> makeL3RouteTablePos1()
 {
@@ -2668,7 +2356,7 @@ INSTANTIATE_TEST_SUITE_P(
     Runs, MultiHop,
     ::testing::Values(
       //     pos port1   port2
-      Case{ 1, l3AddrTblPrioPos1, makeL3RouteTablePos1(), l3BcastInSubnetForSrcPortPos1, makeL3RouteHopsPos1(), {3, 2} },
+      Case{1, l3AddrTblPrioPos1, makeL3RouteTablePos1(), l3BcastInSubnetForSrcPortPos1, makeL3RouteHopsPos1(), {3, 2}},
       Case{ 2, l3AddrTblPrioPos2, makeL3RouteTablePos2(), l3BcastInSubnetForSrcPortPos2, makeL3RouteHopsPos2(), {3, 2} },
       Case{ 3, l3AddrTblPrioPos3, makeL3RouteTablePos3(), l3BcastInSubnetForSrcPortPos3, makeL3RouteHopsPos3(), {3, 3} },
       Case{ 5, l3AddrTblPrioPos5, makeL3RouteTablePos5(), l3BcastInSubnetForSrcPortPos5, makeL3RouteHopsPos5(), {3, 0} },

@@ -314,6 +314,7 @@ bool getL4Pkt(L4Pkt* l4Pkt, uint16_t pos, uint8_t prio, uint8_t pktPrio) {
 	return false;
 }
 
+/* before writting here check if there is first check if there is enough pages */
 void writeValToPage(PgPtr_t * pgPtr, uint8_t *val, uint8_t len) {
 	while (len) {
 		uint8_t writeLen;
@@ -348,6 +349,10 @@ typedef struct IpTxQueue_t IpTxQueue_t;
 
 bool l4SendUdp(const uint8_t* data, const uint16_t len, const uint8_t priority, const PosType_t pos) {
 	/* check first if enough pages are available */
+	if (!allocatorCapacity(NULL, len + sizeof(UdpHdr_t))) {
+		return false;
+	}
+
 	UdpHdr_t udpHdr = {
 		.srcPort = myPos,
 		.dstPort = pos,
@@ -369,7 +374,7 @@ void l4CmtRx(PgPtr_t* const pgPtr, const Protocol_t proto, MsgLenType_t msgLen) 
 				readFromPgs(pgPtr, (uint8_t*)&udpHdr, sizeof(UdpHdr_t));
 
 				if (udpHdr.length == msgLen &&
-					udpHdr.dstPort == myPos) {
+					(udpHdr.dstPort == myPos || udpHdr.dstPort == 0)) {
 					uint8_t udpData[MAX_UDP_DATAGRAM_SIZE];
 					readFromPgs(pgPtr, udpData, msgLen);
 #ifdef NETWORK_ISR_RECV

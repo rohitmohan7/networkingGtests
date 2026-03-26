@@ -12,6 +12,9 @@
 extern uint8_t g_next[NUM_PAGES];
 extern uint8_t   g_pool[POOL_BYTES];
 extern uint8_t  g_free_count;
+#ifdef UNIT_TEST
+extern uint8_t g_free_head;
+#endif
 
 typedef uint16_t MsgLenType_t;
 
@@ -54,4 +57,5 @@ uint16_t  freePgPtrLen(PgPtr_t* pgPtr, uint16_t len);
 uint16_t  advancePgPtrLen(PgPtr_t* pgPtr, uint16_t len);
 bool allocPgPtr(PgPtr_t* pgPtr, uint16_t len);
 void getPgPtrSpan(PgPtr_t* fromPgPtr, PgPtr_t* tpPgPtr, uint16_t start, uint16_t len);
+bool allocatorCapacity(PgPtr_t* pgPtr, uint16_t len);
 #endif

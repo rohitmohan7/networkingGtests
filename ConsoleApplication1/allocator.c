@@ -6,7 +6,11 @@ uint8_t g_next[NUM_PAGES];
 uint8_t   g_pool[POOL_BYTES];
 static uint8_t g_users[NUM_PAGES];
 uint8_t  g_free_count;
+#ifndef UNIT_TEST
 static uint8_t g_free_head;
+#else
+uint8_t g_free_head;
+#endif
 
 void pages_init(void)
 {
@@ -235,6 +239,9 @@ void getPgPtrSpan(PgPtr_t* fromPgPtr, PgPtr_t* toPgPtr, uint16_t start, uint16_t
 bool allocPgPtr(PgPtr_t* pgPtr, uint16_t len) {
     if (len > pgPtr->len) {
         len -= pgPtr->len;
+        if (!allocatorCapacity(pgPtr, len)) {
+            return false;
+        }
     }
     else {
         return true;
@@ -245,6 +252,28 @@ bool allocPgPtr(PgPtr_t* pgPtr, uint16_t len) {
             return false;
         }
         len -= pgLen;
+    }
+    return true;
+}
+
+
+bool allocatorCapacity(PgPtr_t * pgPtr, uint16_t reqLen) {
+    /* --- Deterministic capacity check ---
+    * Worst-case extra pages needed if tail has some free space:
+    * bytes can fit into tail slack first, then pages.
+    */
+    uint16_t tail_free = 0U;
+
+    if (pgPtr && pgPtr->tlPg != INVALID_PAGE)
+    {
+        tail_free = UNIT - pgPtr->tlUsd;  /* 0..UNIT */
+    }
+
+    const uint16_t bytes_after_tail = (reqLen > tail_free) ? (uint16_t)((reqLen)-tail_free) : 0U;
+    const uint16_t need_pages = (bytes_after_tail == 0U) ? 0U : ceilPages(bytes_after_tail);
+    if (g_free_count < need_pages)
+    {
+        return false; /* deterministic fail */
     }
     return true;
 }

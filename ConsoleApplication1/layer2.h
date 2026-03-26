@@ -6,7 +6,7 @@
 
 typedef enum L2XferDir_et {
 	L2_XFER_TX,
-	L2_XFER_RX_ECHO,
+	L2_XFER_RX,
 	L2_XFER_SIZE
 } L2XferDir_t;
 
@@ -36,14 +36,14 @@ static inline L2TxPktDesc* L2_GetPktDesc(uint8_t port)
 #define INTER_FRAME_SILENCE_JITTER 200 // give some time for slave jitter
 
 typedef uint8_t L2Crc_t;
-#define RS485_FRAME_SIZE (256 - sizeof(L2Crc_t))
+#define RS485_FRAME_SIZE (256)
 
 typedef struct __attribute__((packed)) {
 	uint8_t addr;
 	uint8_t type;
 } L2Hdr;
 _Static_assert(sizeof(L2Hdr) == 2, "L2Hdr wrong size");
-#define L2_FRAME_SIZE (RS485_FRAME_SIZE - sizeof(L2Hdr))
+#define L2_FRAME_SIZE (RS485_FRAME_SIZE - sizeof(L2Hdr) - sizeof(L2Crc_t))
 
 typedef struct {
 	L2Hdr l2hdr;

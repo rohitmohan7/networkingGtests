@@ -356,7 +356,7 @@ bool validateTxEcho(UART_Type* UARTptr, uint8_t port, uint8_t count) {
 		uint8_t* ptr = NULL;
 		uint8_t  len;
 
-		txCmplt = l2GetTxPkt(port, &ptr, &len, rxIndex[port], count, L2_XFER_RX_ECHO); // return remaining len
+		txCmplt = l2GetTxPkt(port, &ptr, &len, rxIndex[port], count, L2_XFER_RX); // return remaining len
 		bool valid = l1UARTCmpNonBlocking(UARTptr, ptr, len);
 
 		count = (count > len) ? (count - len) : 0;

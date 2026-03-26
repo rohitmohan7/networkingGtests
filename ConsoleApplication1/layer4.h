@@ -117,4 +117,6 @@ bool l4TxBrdcastStrmEmpty(PgPtr_t* pgPtr);
 bool l4StrmEmptyAftBrdcstFrme(const PgPtr_t* const pgPtr, const MsgLenType_t msgLen);
 
 TxOrderType l4GetStrmTxOrder(const uint8_t pos, const uint8_t prio);
+
+bool l4SendUdp(const uint8_t* data, const uint16_t len, const uint8_t priority, const PosType_t pos);
 #endif

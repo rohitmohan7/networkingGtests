@@ -469,6 +469,9 @@ static void build_route_row_for_my_pos(const uint16_t l3AddrTable[MAX_POS][MAX_P
         {
             l3RouteTable[subnet] = rs.firstGw[subnet];
             l3RouteHops[subnet] = (uint16_t)rs.hops[subnet];
+            if (l3MaxHops < l3RouteHops[subnet]) {
+                l3MaxHops = l3RouteHops[subnet];
+            }
         }
     }
 }

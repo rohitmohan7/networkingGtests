@@ -156,7 +156,7 @@ uint16_t advancePgPtrLen(PgPtr_t* pgPtr, uint16_t len) {
     return movePgPtr(pgPtr, len, false);
 }
 
-void freePgPtrHd(PgPtrHd_t * pgPtrHd, uint8_t len) {
+static inline void movePgPtrHd(PgPtrHd_t* pgPtrHd, uint16_t len, bool free) {
     while (len && pgPtrHd->hd != INVALID_PAGE)
     {
         uint8_t take = min(len, (UNIT - pgPtrHd->hdOfst));
@@ -166,10 +166,20 @@ void freePgPtrHd(PgPtrHd_t * pgPtrHd, uint8_t len) {
             /* free and advance head */
             uint8_t currPage = pgPtrHd->hd;
             pgPtrHd->hd = g_next[currPage];
-            page_free(currPage);
+            if (free) {
+                page_free(currPage);
+            }
             pgPtrHd->hdOfst = 0;
         }
     }
+}
+
+void freePgPtrHd(PgPtrHd_t * pgPtrHd, uint16_t len) {
+    movePgPtrHd(pgPtrHd, len, true);
+}
+
+void advancePgPtrHd(PgPtrHd_t* pgPtrHd, uint16_t len) {
+    movePgPtrHd(pgPtrHd, len, false);
 }
 
 void addUser(PgPtr_t *pgPtr)

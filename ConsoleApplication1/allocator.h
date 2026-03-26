@@ -51,11 +51,12 @@ void freePgPtr(PgPtr_t *pgPtr);
 void pgPtrInit(PgPtr_t * const pgPtr);
 void addUser(PgPtr_t *pgPtr);
 uint8_t getPgUsers(uint8_t pg);
-void freePgPtrHd(PgPtrHd_t* pgPtrHd, uint8_t len);
+void freePgPtrHd(PgPtrHd_t* pgPtrHd, uint16_t len);
 void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint16_t size);
 uint16_t  freePgPtrLen(PgPtr_t* pgPtr, uint16_t len);
 uint16_t  advancePgPtrLen(PgPtr_t* pgPtr, uint16_t len);
 bool allocPgPtr(PgPtr_t* pgPtr, uint16_t len);
 void getPgPtrSpan(PgPtr_t* fromPgPtr, PgPtr_t* tpPgPtr, uint16_t start, uint16_t len);
 bool allocatorCapacity(PgPtr_t* pgPtr, uint16_t len);
+void advancePgPtrHd(PgPtrHd_t* pgPtrHd, uint16_t len);
 #endif

@@ -29,7 +29,6 @@ _Static_assert((sizeof(L3Hdr) % 4U) == 0U, "L3Hdr size must be multiple of 4 byt
 _Static_assert(sizeof(L3Hdr) >= IPV4_HDR_MIN_LEN && sizeof(L3Hdr) <= IPV4_HDR_MAX_LEN, "L3Hdr invalid size");
 
 typedef struct __attribute__((packed)) {
-  uint8_t data[sizeof(L4Hdr)]; // first 4 data of frwd pkt not neccesarily l4 hdr
   uint8_t dstPort;
 } L3FrwdPkt;
 
@@ -39,17 +38,9 @@ typedef struct __attribute__((packed)) {
 	L3Hdr hdr;
 	union {
 		L3FrwdPkt frwdPkt;
-		L4Pkt l4Pkt;
 		IpReassQueue_t * ipReassQueue; // for ip rx
 	};
 } L3Pkt;
-
-/* light weight stream tx Brdcst streams */
-typedef struct l3BrdCstStrm_st {
-	L4Hdr txMsgHdr;
-	TxOrderType txOrder;
-	PgPtr_t txPgPtr; /* Hd only needed tail is shared */
-} l3BrdCstStrm_t;
 
 extern uint16_t l3AddrTblPrio[MAX_POS][MAX_PORT]; // pos addr table ordered by hops/bus load
 extern uint16_t l3RouteTable[MAX_SUBNET]; // gateway table

@@ -107,22 +107,6 @@ static bool node_is_used(int pos)
     return false;
 }
 
-static bool node_has_subnet(int pos, uint8_t subnet)
-{
-    int port;
-
-    if (subnet == INVALID_SUBNET) {
-        return false;
-    }
-
-    for (port = 0; port < MAX_PORT; port++) {
-        if (topology[pos].subnet[port] == subnet) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static PosType_t build_used_pos_list(PosType_t usedPos[MAX_POS])
 {
     PosType_t count = 0;

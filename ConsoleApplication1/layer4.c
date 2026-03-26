@@ -388,34 +388,6 @@ void l4CmtRx(PgPtr_t* const pgPtr, const Protocol_t proto, MsgLenType_t msgLen) 
 	default:
 		break;
 	}
-
-#if 0
-	L4Hdr *l4Hdr = &l4Pkt->hdr;
-	// identify the stream
-	stream_t *const s = &streams[l4Pkt->pos][prio];
-
-	if (l4Hdr->msgFlgs & L4_MSG_FLAG_TYPE_ACK) // this is an ack message
-	{
-		if ((s->txMsgHdr.msgFlgs & L4_MSG_FLAG_PENDING_ACK) &&
-			 s->txMsgHdr.msgNo == l4Hdr->msgNo)
-		{ // message was successfully sent
-			clearMsgFrame(NULL, s, l4Pkt->pos, true);
-		}
-	}
-	else if (l4Hdr->msgLen == 0)
-	{
-		// call into app immediatly to process message
-		appRecv(s);
-		freeRxStream(s);
-
-		if (l4Hdr->msgFlgs & L4_MSG_FLAG_REQ_ACK) {
-			// tx an ack
-			l4SndAck(s);
-		}
-	}
-	
-	s->rxMsgHdr.rxDesc.hd = INVALID_PAGE;
-#endif
 }
 
 uint8_t getL4RxPktFrag(L4Pkt *l4Pkt, uint8_t **ptr, uint8_t rxLen, uint8_t prio)

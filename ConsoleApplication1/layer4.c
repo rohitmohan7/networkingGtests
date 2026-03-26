@@ -14,6 +14,11 @@
 
 stream_t streams[MAX_POS][MAX_PRIORITY];
 
+#ifndef NETWORK_ISR_RECV
+
+#endif
+
+
 TxOrderType txOrder = 0;
 
 void l4Init() {

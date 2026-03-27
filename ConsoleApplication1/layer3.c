@@ -528,6 +528,8 @@ void l3AbortRx(L3Pkt* const l3Pkt, const uint8_t port) {
 	}
 #endif
 
+	// TODO free any rx 
+	
 	//l4AbortRx();
 }
 
@@ -549,10 +551,7 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 		
 #if MAX_PORT > 1
 		// check forward packet first 
-		if (l3FrwdQCount[port][prio])
-		{
-			/* TODO what if we are still being filled from other port */
-			
+		if (l3FrwdQCount[port][prio]) {			
 			/* Copy the header */
 			const uint8_t frwdQHd = l3FrwdQHead[port][prio];
 			L3Pkt *l3FrwdPkt = &l3FrwdQ[port][prio][frwdQHd];
@@ -601,6 +600,8 @@ bool getl3Pkt(uint8_t port, L3Pkt* l3Pkt, bool* xferMst, uint8_t * l2Addr) {
 	//return false;
 }
 
+static uint8_t l3HdrBuff[IPV4_HDR_MAX_LEN - sizeof(L3Hdr)]; // to store unused header for backwards compatibility, remove if sizeof(L3Hdr) == IPV4_HDR_MAX_LEN
+
 uint8_t getL3PktFrag(L3Pkt* const l3Pkt, uint8_t** ptr, uint8_t idx, uint8_t txLen, uint8_t port, uint8_t xferDir) {
 	L3Hdr* l3Hdr = &l3Pkt->hdr;
 
@@ -610,6 +611,9 @@ uint8_t getL3PktFrag(L3Pkt* const l3Pkt, uint8_t** ptr, uint8_t idx, uint8_t txL
 	} else if (idx + txLen >= l3Hdr->totalLen) {
 		/* cap tx len */
 		txLen = l3Hdr->totalLen - idx;
+	} else if (idx < getIpv4HdrLen(l3Hdr)) { // unused header 
+		*ptr = l3HdrBuff;
+		return sizeof(l3HdrBuff);
 	}
 
 #if MAX_PORT > 1

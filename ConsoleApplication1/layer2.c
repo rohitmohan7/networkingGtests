@@ -262,6 +262,7 @@ static inline void l2AbortRx(uint8_t port) {
 void l2AbortXfer(uint8_t port) {
 	l2AbortTx(port);
 	l2AbortRx(port);
+	pitEnableTimerSingleShot((L2_PIT_TIMER_START_IDX + port), USEC_TO_COUNT(INTER_FRAME_SILENCE, BUS_CLK_HZ), &interFrmeSlnce); // wait for the rx to end
 }
 
 uint8_t l2GetRxPkt(uint8_t port, uint8_t** ptr, uint8_t rxLen, uint16_t idx) {

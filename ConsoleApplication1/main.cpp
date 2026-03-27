@@ -107,6 +107,10 @@ struct MockUart {
 
 static MockUart* g_mock = nullptr;
 
+extern "C" void l1UARTAbortRead(UART_Type* UARTptr) {
+    // TODO DOES IT NEED EXPECT CALL?
+}
+
 // 3) The linker will redirect calls to hw_read() to __wrap_hw_read()
 extern "C" void l1UARTWriteNonBlocking(UART_Type *UART, const uint8_t *data, size_t length, L2Crc_t *crc)
 {
@@ -410,7 +414,7 @@ void sendPduMsg(MockUart &mock,
                 const uint8_t *msg,
                 const int &origSize,
                 const uint8_t &port,
-                const bool& forward = false)
+                const bool& abort = false)
 {
     using ::testing::InSequence;
 
@@ -418,7 +422,7 @@ void sendPduMsg(MockUart &mock,
     size_t streamPos = 0;
     size_t totalRx = 0;
 
-    auto contiguousAvail = [forward](size_t idx) -> size_t
+    auto contiguousAvail = [](size_t idx) -> size_t
     {
         if (idx < sizeof(L2Hdr))
         {
@@ -427,10 +431,6 @@ void sendPduMsg(MockUart &mock,
         if (idx < sizeof(L2Hdr) + sizeof(L3Hdr))
         {
             return (sizeof(L2Hdr) + sizeof(L3Hdr)) - idx;
-        }
-        if (!forward && idx < sizeof(PduHdr))
-        {
-            return sizeof(PduHdr) - idx;
         }
         return 0;
     };
@@ -524,7 +524,7 @@ void sendPduMsg(MockUart &mock,
 
     UART->S1 |= UART_S1_RDRF_MASK;
 
-    uint8_t hdrSize = forward ? sizeof(L2Hdr) + sizeof(L3Hdr) : sizeof(PduHdr);
+    uint8_t hdrSize = sizeof(L2Hdr) + sizeof(L3Hdr);
 
     {
         InSequence seq;
@@ -565,6 +565,9 @@ void sendPduMsg(MockUart &mock,
         uint8_t size = std::min(static_cast<int>(UNIT - rxPgOfst), msgSize);
         UART->RCFIFO = size;
         l1TransferHandleIRQ(UART, port);
+        if (abort) {
+            return;
+        }
         msgSize -= size;
     }
 
@@ -1078,9 +1081,13 @@ TEST_P(MultiHop, udpPduRx)
 
         /* Send Frag 1 first */
         sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag1.data(),
-            pktFrag1.size(), port, true);
+            pktFrag1.size(), port);
 
         /* Send Out of order Frag 3 next */
+        sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag3.data(),
+            pktFrag3.size(), port);
+
+        /* Send Dupe Frag 3 next */
         sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag3.data(),
             pktFrag3.size(), port, true);
 //#if 0
@@ -1093,9 +1100,12 @@ TEST_P(MultiHop, udpPduRx)
                 }))
             .RetiresOnSaturation();
 #endif
+        /*inter frame silence */
+        PITCallback(port + L2_PIT_TIMER_START_IDX);
+
         /* Send Out Frag 2 next*/
         sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag2.data(),
-            pktFrag2.size(), port, true);
+            pktFrag2.size(), port);
 
 #ifndef NETWORK_ISR_RECV
         // construct  another message
@@ -1118,7 +1128,7 @@ TEST_P(MultiHop, udpPduRx)
             .RetiresOnSaturation();
 
         sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag1.data(),
-            pktFrag1.size(), port, true);
+            pktFrag1.size(), port);
 
         /* do partial read of first message*/
         uint8_t data[L3_FRAME_SIZE];
@@ -1499,7 +1509,7 @@ TEST_P(MultiHop, pduHopFrwd)
 
             // send msg to port 1
             sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
-                       msg.size(), port, true);
+                       msg.size(), port);
 
             // send MST to port 2
             sendMstToken(mock, uart_ptrs[port2], l2Addr2, port2);
@@ -1553,7 +1563,7 @@ TEST_P(MultiHop, pduHopFrwd)
 
                     // send msg to port 1
                     sendPduMsg(mock, &uart_objs[port], rxPgOfst, msg.data(),
-                               msg.size(), port, true);
+                               msg.size(), port);
 
                     // send MST to port 2
                     sendMstToken(mock, uart_ptrs[port2], l2Addr2, port2);
@@ -1734,7 +1744,7 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
 
         // send msg to port 1
         sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag1.data(),
-            pktFrag1.size(), port, true);
+            pktFrag1.size(), port);
 
 #ifndef NETWORK_ISR_RECV
         /* do full read of next message */

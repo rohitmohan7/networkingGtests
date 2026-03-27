@@ -145,17 +145,6 @@ void l1Init(UART_Type* UARTPtr[MAX_PORT]) {
 	}
 }
 
-static void l1UARTAbortRead(UART_Type* UARTptr)
-{
-	while ((UARTptr->S1 & UART_S1_RDRF_MASK) != 0U)
-	{
-		(void)UARTptr->D;
-	}
-
-	/* Flush FIFO */
-	UARTptr->CFIFO |= UART_CFIFO_RXFLUSH_MASK;
-}
-
 #if 0
 static inline void l1AbortTx(UART_Type* UARTptr, uint8_t port) {
 	txIndex[port] = 0;
@@ -213,6 +202,17 @@ static inline L2Crc_t crc8SmbusContigeous(L2Crc_t crc,
 }
 
 #ifndef UNIT_TEST //pheripheral functions
+static void l1UARTAbortRead(UART_Type* UARTptr)
+{
+	while ((UARTptr->S1 & UART_S1_RDRF_MASK) != 0U)
+	{
+		(void)UARTptr->D;
+	}
+
+	/* Flush FIFO */
+	UARTptr->CFIFO |= UART_CFIFO_RXFLUSH_MASK;
+}
+
 static void l1UARTWriteNonBlocking(UART_Type *UARTptr, const uint8_t *data, size_t length, L2Crc_t * crcPtr)
 {
 	assert(data != NULL);

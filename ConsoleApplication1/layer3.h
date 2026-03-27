@@ -4,6 +4,7 @@
 //#include "layer2.h"
 
 #define MAX_SUBNET 256
+#define MAX_PRIORITY 3
 
 typedef uint16_t IpAddrType_t; // TODO future: change to unit32_t if interfacing with IEEE 802 networks 
 
@@ -65,12 +66,6 @@ void l3CmtRx(L3Pkt *const l3Pkt, const uint8_t port, uint8_t l3RxLen);
 bool l3CmtRxHd(L3Pkt *l3Pkt, const uint8_t port);
 
 uint8_t getL3RxPktFrag(uint8_t port, L3Pkt *l3Pkt, uint8_t **ptr, uint8_t rxLen);
-
-bool l3TxBrdcstMsg(const uint8_t* data, MsgLenType_t len, uint8_t priority);
-
-uint8_t l3GetRxPktHdrSize(L3Pkt *l3Pkt, uint8_t port);
-
-uint8_t l3GetTxPktHdrSize(L3Pkt *l3Pkt, uint8_t port);
 
 void l3InitTxPkt(L3Pkt* l3Pkt);
 

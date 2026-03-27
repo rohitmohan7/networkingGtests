@@ -58,6 +58,7 @@ typedef struct __attribute__((packed)) IpReassQueue_st {
 	PgPtr_t pgPtr;
 	uint16_t maxLen;
 	uint16_t rxLen;
+	uint16_t srcPos; // keep track of src pos  
 	uint8_t  blockMap[IP_REASS_BITMAP_BYTES];
 } IpReassQueue_t;
 
@@ -384,16 +385,14 @@ static inline PosType_t l3GetSrcPos(IpAddrType_t srcAddr) {
 	return MAX_POS;
 }
 
-static inline void l3BrdCst(const uint8_t port, L3Pkt *const l3Pkt, PgPtr_t * const rxPgPtr, uint16_t startByte, uint16_t payloadLen) {
+static inline void l3BrdCst(const uint8_t port, 
+							L3Pkt *const l3Pkt, 
+							IpReassQueue_t* const ipReassQ,
+							uint16_t startByte, 
+							uint16_t payloadLen) {
 	const L3Hdr *l3Hdr = &l3Pkt->hdr;
 	const uint8_t portSubnet = l3AddrTblPrio[myPos][port] >> 8;
 	const uint8_t prio = l3Hdr->prio;
-
-	/* identify the src pos */
-	PosType_t srcPos = l3GetSrcPos(l3Hdr->src);
-	if (srcPos == MAX_POS) {
-		return;
-	}
 
 	PgPtr_t* pgPtr = NULL;
 
@@ -404,12 +403,12 @@ static inline void l3BrdCst(const uint8_t port, L3Pkt *const l3Pkt, PgPtr_t * co
 		}
 
 		// check brdcast table
-		if (l3BcastInSubnetForSrcPort[srcPos][peerPort] == portSubnet) {
+		if (l3BcastInSubnetForSrcPort[ipReassQ->srcPos][peerPort] == portSubnet) {
 			PgPtr_t *frwdQPgPtr = l3PushFrwdPkt(l3Pkt, peerPort);
 
 			if (frwdQPgPtr) {
 				if (!pgPtr) {
-					getPgPtrSpan(rxPgPtr, frwdQPgPtr, startByte, payloadLen);
+					getPgPtrSpan(&ipReassQ->pgPtr, frwdQPgPtr, startByte, payloadLen);
 					pgPtr = frwdQPgPtr;
 				}
 				else {
@@ -530,12 +529,6 @@ void l3AbortRx(L3Pkt* const l3Pkt, const uint8_t port) {
 #endif
 
 	//l4AbortRx();
-}
-
-static inline void setL3Hdr(L3Hdr* const l3Hdr, const uint16_t src, const uint8_t prio, uint16_t dstAddr) {
-	l3Hdr->src = src;
-	l3Hdr->prio = prio;
-	l3Hdr->dst = dstAddr;
 }
 
 bool passMstIpTx(const uint8_t port, const uint8_t prio, const uint8_t ipTxQCnt) {
@@ -704,8 +697,8 @@ static inline bool ipReassKeyEqual(const IpReassKey_t* key, const L3Hdr* hdr)
 static bool ipReassLoadRxPgPTr(IpReassQueue_t* const ipReassObj, const L3Hdr * const l3Hdr, const uint8_t port)
 {
 	/* Todo check if there is enough pages else fail early */
-	/* set up to frag idx */
-	/* pre allocate */
+/* set up to frag idx */
+/* pre allocate */
 	const uint16_t payloadLen = (l3Hdr->totalLen - getIpv4HdrLen(l3Hdr));
 	uint16_t startByte = (uint16_t)((l3Hdr->fragOfst & IP_FRAG_OFFSET_MASK) << 3);
 	uint32_t endByte = (uint32_t)startByte + (uint32_t)payloadLen;
@@ -802,6 +795,12 @@ static inline IpReassQueue_t * ipReassFindQueue(const L3Hdr * hdr)
 
 static inline IpReassQueue_t * ipReassAllocQueue(const L3Hdr * hdr)
 {
+	/* first check for valid srcpos*/
+	PosType_t srcPos = l3GetSrcPos(hdr->src);
+	if (srcPos == MAX_POS) {
+		return NULL;
+	}
+
     uint8_t i;
     for (i = 0U; i < IP_MAX_REASS_QUEUES; i++)
     {
@@ -812,6 +811,16 @@ static inline IpReassQueue_t * ipReassAllocQueue(const L3Hdr * hdr)
 			g_ipReass[i].key.proto = hdr->proto;
 			g_ipReass[i].key.id = hdr->fragId;
 			g_ipReass[i].expireTick = pitGetCurrMS() + IP_REASS_TIMEOUT_TICKS;
+			g_ipReass[i].srcPos = srcPos;
+
+#ifndef NETWORK_ISR_RECV
+			/* get the tail from UDP sock */
+			// TODO TCP
+			if (hdr->proto == IP_PROTO_UDP) {
+				l4SetUdpTail(srcPos, &g_ipReass[i].pgPtr);
+			}
+#endif
+
 			return &g_ipReass[i];
         }
     }
@@ -925,7 +934,7 @@ void l3CmtRx(L3Pkt * const l3Pkt, const uint8_t port, uint8_t l3RxLen)
 	/* Check to brodcast */
 	if (l3TxBrdcstPkt(l3Hdr) && l3Hdr->ttl > 1) {
 		l3Hdr->ttl--;
-		l3BrdCst(port, l3Pkt, &l3Pkt->ipReassQueue->pgPtr, startByte, payloadLen);
+		l3BrdCst(port, l3Pkt, l3Pkt->ipReassQueue, startByte, payloadLen);
 	}
 #endif
 	
@@ -935,7 +944,7 @@ void l3CmtRx(L3Pkt * const l3Pkt, const uint8_t port, uint8_t l3RxLen)
 	}
 
 	if (q->maxLen == q->rxLen) {
-		l4CmtRx(&q->pgPtr, q->key.proto, q->maxLen);
+		l4CmtRx(&q->pgPtr, q->key.proto, q->srcPos, q->maxLen);
 		l3InitIpReassQ(q); // release the q without clearing pgPtr (l4 might still use it ...)
 	} else {
 		/* set block map */

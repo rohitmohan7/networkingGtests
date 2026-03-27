@@ -145,7 +145,7 @@ static inline uint16_t movePgPtr(PgPtr_t* pgPtr, uint16_t len, bool free) {
             pgPtr->hdOfst = 0;
         }
     }
-    return origLen;
+    return origLen - len;
 }
 
 uint16_t freePgPtrLen(PgPtr_t* pgPtr, uint16_t len) {
@@ -215,11 +215,9 @@ uint8_t getPgUsers(uint8_t pg) {
     return g_users[pg];
 }
 
-void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint16_t size) {
+void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint16_t size, bool free) {
     for (int i = 0; i < size; i++) {
-        if (pgPtr->hdPg == INVALID_PAGE ||
-            (pgPtr->hdPg == pgPtr->tlPg && pgPtr->hdOfst == pgPtr->tlUsd)) { // TODO deterministic fail
-            memset(val, 0, i); // revert any reads
+        if (pgPtr->hdPg == INVALID_PAGE) {
             return;
         }
 
@@ -231,7 +229,16 @@ void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint16_t size) {
             uint8_t currPage = pgPtr->hdPg;
             pgPtr->hdPg = g_next[pgPtr->hdPg];
             pgPtr->hdOfst = 0;
-            page_free(currPage);
+            if (free) {
+                page_free(currPage);
+            }
+        }
+
+        if (pgPtr->hdPg == pgPtr->tlPg && pgPtr->hdOfst == pgPtr->tlUsd) {
+            if (free) {
+                freePgPtr(pgPtr);
+            }
+            return;
         }
     }
 }

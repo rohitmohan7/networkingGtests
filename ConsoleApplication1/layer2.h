@@ -48,7 +48,6 @@ _Static_assert(sizeof(L2Hdr) == 2, "L2Hdr wrong size");
 typedef struct {
 	L2Hdr l2hdr;
 	L3Hdr l3hdr;
-	L4Hdr l4hdr;
 } PduHdr;
 
 typedef struct __attribute__((packed)) L2Pkt {

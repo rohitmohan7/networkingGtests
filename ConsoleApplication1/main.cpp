@@ -639,7 +639,7 @@ void expectFrwdHdr(MockUart &mock, UART_Type *UART, const PduHdr &pduHdr, const 
 
     if (!echo)
     {
-        EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), sizeof(PduHdr) - sizeof(L4Hdr), testing::NotNull()))
+        EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), sizeof(PduHdr), testing::NotNull()))
             .Times(1)
             .WillOnce(testing::Invoke([pduHdr](UART_Type *UART, const uint8_t *data, size_t len, L2Crc_t *crc)
                                       { EXPECT_EQ(0, std::memcmp(data, (uint8_t *)&pduHdr, len)); }))
@@ -704,240 +704,6 @@ enum class TxMultiFrameType {
     TX_MULTI_FRAME_NEW_FRAME,
     TX_MULTI_FRAME_CONT,
 };
-
-void expectTxMultiFrame(MockUart &mock,
-                        UART_Type *UART,
-                        const uint8_t &port,
-                        uint8_t &idxIn,
-                        uint8_t &sizeIn,
-                        const TxMultiFrameType &type,
-                        const uint8_t *msg,
-                        const int &msgSize,
-                        const PduHdr &hdr = PduHdr(),
-                        const bool &mstAftLstFrame = true,
-                        const uint32_t &milliSeconds = 0,
-                        const bool &echo = false,
-                        L2Crc_t expectCrc = 0)
-{
-    uint8_t idx = idxIn;
-    uint8_t size = sizeIn;
-
-    if (type == TxMultiFrameType::TX_MULTI_FRAME_FIRST_MSG) {
-        size = 0;
-        idx = 0;
-    }
-
-    if (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG) {
-        idx = 0; // zero the idx
-    }
-
-    if (type != TxMultiFrameType::TX_MULTI_FRAME_CONT) {
-        if (!echo) {
-            // confirm is primed
-            ASSERT_TRUE(
-                ((UART->C2 & (uint8_t)(UART_C2_TCIE_MASK)) == 0U) &&
-                ((UART->C2 & (uint8_t)(UART_C2_TE_MASK)) == 0U) &&
-                ((UART->C2 & (uint8_t)(UART_C2_TIE_MASK)) != 0U)
-            );
-        }
-        // expect header
-        if (!echo) {
-            expectCrc = expectHdr(mock, UART, hdr, port, echo);
-        } else {
-            expectHdr(mock, UART, hdr, port, echo);
-        }
-    }
-
-    size = UNIT - (size + (type == TxMultiFrameType::TX_MULTI_FRAME_NEW_MSG ? sizeof(L4Hdr::msgLen) + sizeof(txOrder) + (hdr.l3hdr.dst == 0 ? 0 : sizeof(L4Hdr::msgFlgs)) : 0));
-    uint8_t len = UART_FIFO_SIZE - size - (type != TxMultiFrameType::TX_MULTI_FRAME_CONT ? sizeof(PduHdr) : 0);
-
-    for (;;) {
-        uint8_t idx_loc = idx;
-        if (idx_loc + size > msgSize) {
-            size = msgSize - idx_loc;
-            len = 0;
-        }
-        
-        if (!echo) {
-            L2Crc_t nxtExpectCrc = crcTestContinous(expectCrc, (msg + idx_loc), size);
-            EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), size, testing::NotNull()))
-                .Times(1)
-                .WillOnce(testing::Invoke([msg, idx_loc, expectCrc, nxtExpectCrc](UART_Type *UART, const uint8_t *data, size_t len, L2Crc_t *crc)
-                                          { 
-                                            EXPECT_EQ(0, std::memcmp(data, (msg + idx_loc), len));
-                                            ASSERT_EQ(expectCrc, *crc);
-                                            *crc = nxtExpectCrc;
-                                          }))
-                .RetiresOnSaturation();
-            expectCrc = nxtExpectCrc;
-        }
-        else {
-            // echo
-            EXPECT_CALL(mock, l1UARTCmpNonBlocking(UART, testing::NotNull(), size))
-                .Times(1)
-                .WillOnce(testing::Invoke([msg, idx_loc](UART_Type* UART, const uint8_t* data, size_t len) {
-                EXPECT_EQ(0, std::memcmp(data, (msg + idx_loc), len));
-                return true;
-                    }))
-                .RetiresOnSaturation();
-#if 0
-            if ((idx + size >= msgSize) && !(len) && (hdr.l4hdr.msgFlgs & L4_MSG_FLAG_REQ_ACK)) {
-                EXPECT_CALL(mock, pitGetCurrMS())
-                    .Times(1)
-                    .WillOnce(testing::Return(milliSeconds))
-                    .RetiresOnSaturation();
-            }
-#endif
-
-            UART->S1 |= UART_S1_RDRF_MASK;
-            UART->RCFIFO = size;
-
-            l1TransferHandleIRQ(UART, port);
-
-            UART->S1 &= ~UART_S1_RDRF_MASK;
-            UART->RCFIFO = 0;
-        }
-        
-        idx += size;
-
-        if (len == 0) {
-            break;
-        }
-
-        size = std::min((uint8_t)UNIT, len);
-        if (idx + size > L4_FRAME_SIZE) {
-            size = L4_FRAME_SIZE - idx;
-            len = 0;        
-        }
-        else {
-            len -= size;
-        }
-    }
-
-    if (echo) {
-        sizeIn = size;
-        idxIn = idx;
-        if (!(idx % L4_FRAME_SIZE) || (msgSize - idx) < UART_FIFO_SIZE) {
-            
-            /* CRC echo */
-            // set the echo register
-            UART->S1 |= UART_S1_RDRF_MASK;
-            UART->RCFIFO = sizeof(L2Crc_t);
-            // echo
-                                            
-            EXPECT_CALL(mock, l1UARTCmpNonBlocking(UART, testing::NotNull(), sizeof(L2Crc_t)))
-                    .Times(1)
-                    .WillOnce(testing::Invoke([expectCrc](UART_Type *UART, const uint8_t *data, size_t len)
-                                              {
-            EXPECT_EQ(0, std::memcmp(data, (&expectCrc), len));
-            return true; }))
-                    .RetiresOnSaturation();
-
-            if ((idx >= msgSize) && /*!(len) && */(hdr.l4hdr.msgFlgs & L4_MSG_FLAG_REQ_ACK))
-            {
-                EXPECT_CALL(mock, pitGetCurrMS())
-                    .Times(1)
-                    .WillOnce(testing::Return(milliSeconds))
-                    .RetiresOnSaturation();
-            }
-
-            // echo isr
-            l1TransferHandleIRQ(UART, port);
-            UART->S1 &= ~UART_S1_RDRF_MASK;
-
-            // tx complete check to send next frame
-            if ((msgSize - idx) > 0) {
-                // inter frame silence
-                PITCallback(port + L2_PIT_TIMER_START_IDX);
-
-                PduHdr hdrCpy = hdr;
-                if (mstAftLstFrame && (msgSize - idx) <= L4_FRAME_SIZE) {
-                    hdrCpy.l2hdr.type |= L2_PKT_TYPE_MST;
-                }
-                hdrCpy.l4hdr.msgLen = (msgSize - idx) > L4_FRAME_SIZE? (msgSize - idx) - L4_FRAME_SIZE: 0;
-
-                expectTxMultiFrame(mock,
-                    UART,
-                    port,
-                    idxIn,
-                    sizeIn,
-                    TxMultiFrameType::TX_MULTI_FRAME_NEW_FRAME,
-                    msg,
-                    msgSize,
-                    hdrCpy,
-                    mstAftLstFrame,
-                    milliSeconds);
-            }
-        } else {
-            expectTxMultiFrame(mock,
-                               UART,
-                               port,
-                               idxIn,
-                               sizeIn,
-                               TxMultiFrameType::TX_MULTI_FRAME_CONT,
-                               msg,
-                               msgSize,
-                               hdr,
-                               mstAftLstFrame,
-                               milliSeconds,
-                               false,
-                               expectCrc);
-        }
-    }
-    else {
-        UART->S1 = (uint8_t)((UART->S1 & (uint8_t)~UART_S1_TC_MASK) | UART_S1_TDRE_MASK);
-        bool frameCmplt = (!(idx % L4_FRAME_SIZE) || (msgSize - idx) < UART_FIFO_SIZE);
-        
-        if (frameCmplt) {
-            EXPECT_CALL(mock, l1UARTWriteNonBlocking(UART, testing::NotNull(), sizeof(L2Crc_t), testing::IsNull()))
-                .Times(1)
-                .WillOnce(testing::Invoke([expectCrc](UART_Type *UART, const uint8_t *data, size_t len, L2Crc_t *crc)
-                                          { EXPECT_EQ(0, std::memcmp(data, (&expectCrc), len)); }))
-                .RetiresOnSaturation();
-        }
-        
-        l1TransferHandleIRQ(UART, port); // complete TX of single frame
-
-        if (frameCmplt) {
-            // expect TC complete 
-            ASSERT_TRUE(
-                ((UART->C2 & (uint8_t)(UART_C2_TCIE_MASK)) != 0U) &&
-                ((UART->C2 & (uint8_t)(UART_C2_TE_MASK)) != 0U) &&
-                ((UART->C2 & (uint8_t)(UART_C2_TIE_MASK)) == 0U)
-            );
-
-            UART->S1 = (uint8_t)((UART->S1 & (uint8_t)~UART_S1_TDRE_MASK) | UART_S1_TC_MASK);
-            l1TransferHandleIRQ(UART, port); // complete TX of single frame
-
-            // confirm UART TX is disabled
-            ASSERT_NE((UART->C2 & ((uint8_t)UART_C2_TIE_MASK | (uint8_t)UART_C2_TCIE_MASK | (uint8_t)UART_C2_TE_MASK)) != 0, true);
-        }
-        else
-        {
-            // confirm TE is still primed
-            ASSERT_TRUE(
-                ((UART->C2 & (uint8_t)(UART_C2_TCIE_MASK)) == 0U) &&
-                ((UART->C2 & (uint8_t)(UART_C2_TE_MASK)) != 0U) &&
-                ((UART->C2 & (uint8_t)(UART_C2_TIE_MASK)) != 0U)
-            );
-            UART->S1 &= ~UART_S1_TDRE_MASK; // wait for echo to be processed
-        }
-
-        expectTxMultiFrame(mock,
-                           UART,
-                           port,
-                           idxIn,
-                           sizeIn,
-                           type,
-                           msg,
-                           msgSize,
-                           hdr,
-                           mstAftLstFrame,
-                           milliSeconds,
-                           true,
-                           expectCrc);
-    }
-}
 
 void expectFrwdFrame(MockUart &mock,
                      UART_Type *UART,
@@ -1245,7 +1011,7 @@ TEST_P(MultiHop, udpPduRx)
 
 
         L2Hdr l2Hdr = { 0x3, (L2_PKT_TYPE_PDU) };
-        UdpHdr_t udpHdr = { .srcPort = 3, .dstPort = 7, .length = MSG_SIZE };
+        UdpHdr_t udpHdr = { .srcPort = 1, .dstPort = 7, .length = MSG_SIZE };
 
         const uint16_t fragSize = L3_FRAME_SIZE + sizeof(L2Hdr) + sizeof(L3Hdr) + sizeof(L2Crc_t);
 
@@ -1305,11 +1071,6 @@ TEST_P(MultiHop, udpPduRx)
             &expectCrc,
             sizeof(L2Crc_t));
 
-        /*EXPECT_CALL(mock, pitGetCurrMS())
-            .Times(1)
-            .WillOnce(testing::Return(0))
-            .RetiresOnSaturation();
-            */
         EXPECT_CALL(mock, pitGetCurrMS())
             .Times(1)
             .WillOnce(testing::Return(milliSeconds))
@@ -1324,7 +1085,7 @@ TEST_P(MultiHop, udpPduRx)
             pktFrag3.size(), port, true);
 //#if 0
 #ifdef NETWORK_ISR_RECV
-        EXPECT_CALL(mock, appRecv(3, testing::NotNull(), msg.size()))
+        EXPECT_CALL(mock, appRecv(1, testing::NotNull(), msg.size()))
             .Times(1)
             .WillOnce(testing::Invoke([msg](uint16_t pos, const uint8_t* data, size_t len)
                 {
@@ -1335,6 +1096,42 @@ TEST_P(MultiHop, udpPduRx)
         /* Send Out Frag 2 next*/
         sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag2.data(),
             pktFrag2.size(), port, true);
+
+#ifndef NETWORK_ISR_RECV
+        // construct  another message
+        udpHdr.length = L3_FRAME_SIZE - sizeof(UdpHdr_t);
+        l3Hdr.fragOfst = 0;
+        l3Hdr.fragId = 2;
+
+        memcpy(pktFrag1.data() + sizeof(L2Hdr), &l3Hdr, sizeof(L3Hdr));
+        memcpy(pktFrag1.data() + sizeof(L2Hdr) + sizeof(L3Hdr), &udpHdr, sizeof(UdpHdr_t));
+        expectCrc = crcTestContinous(0x00,
+            pktFrag1.data(),
+            pktFrag1.size() - sizeof(L2Crc_t));
+        std::memcpy(pktFrag1.data() + pktFrag1.size() - sizeof(L2Crc_t),
+            &expectCrc,
+            sizeof(L2Crc_t));
+
+        EXPECT_CALL(mock, pitGetCurrMS())
+            .Times(1)
+            .WillOnce(testing::Return(milliSeconds))
+            .RetiresOnSaturation();
+
+        sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag1.data(),
+            pktFrag1.size(), port, true);
+
+        /* do partial read of first message*/
+        uint8_t data[L3_FRAME_SIZE];
+        uint16_t len = appReadUdp(1, data, L3_FRAME_SIZE);
+        ASSERT_EQ(len, L3_FRAME_SIZE);
+        ASSERT_EQ(0, std::memcmp(data, msg.data(), L3_FRAME_SIZE));
+
+        /* do full read of next message */
+        len = appReadUdp(1, data, L3_FRAME_SIZE);
+        ASSERT_EQ(len, L3_FRAME_SIZE - sizeof(UdpHdr_t));
+        ASSERT_EQ(0, std::memcmp(data, msg.data(), L3_FRAME_SIZE));
+
+#endif
 //#endif
     }
     ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
@@ -1687,8 +1484,7 @@ TEST_P(MultiHop, pduHopFrwd)
 
             PduHdr pduHdr = PduHdr{
                 .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU)},
-                .l3hdr = {.prio = 0, .totalLen = l3TotalSize, .ttl = 2, .src = l3SrcAddr, .dst = l3DstAddr },
-                .l4hdr = {0, 0, 0}};
+                .l3hdr = {.prio = 0, .totalLen = l3TotalSize, .ttl = 2, .src = l3SrcAddr, .dst = l3DstAddr }};
 
             memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
 
@@ -1713,8 +1509,7 @@ TEST_P(MultiHop, pduHopFrwd)
             // first expect hdr
             pduHdr = PduHdr{
                 .l2hdr = {l3DstAddr, (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST)},
-                .l3hdr = {.prio = 0, .totalLen = l3TotalSize, .ttl = 1, .src = l3SrcAddr, .dst = l3DstAddr },
-                .l4hdr = {0, 0, 0}};
+                .l3hdr = {.prio = 0, .totalLen = l3TotalSize, .ttl = 1, .src = l3SrcAddr, .dst = l3DstAddr }};
 
             uint8_t size;
 
@@ -1743,8 +1538,7 @@ TEST_P(MultiHop, pduHopFrwd)
 
                     PduHdr pduHdr = PduHdr{
                         .l2hdr = {l2Addr, (L2_PKT_TYPE_PDU)},
-                        .l3hdr = {.prio = 0, .totalLen = l3TotalSize, .ttl = 2, .src = l3SrcAddr, .dst = l3DstAddr },
-                        .l4hdr = {0, 0, 0}};
+                        .l3hdr = {.prio = 0, .totalLen = l3TotalSize, .ttl = 2, .src = l3SrcAddr, .dst = l3DstAddr }};
 
                     memcpy(msg.data(), (uint8_t *)&pduHdr, sizeof(PduHdr));
 
@@ -1769,8 +1563,8 @@ TEST_P(MultiHop, pduHopFrwd)
                     // first expect hdr
                     pduHdr = PduHdr{
                         .l2hdr = {GetParam().l3RouteTable[subnet], (L2_PKT_TYPE_PDU | L2_PKT_TYPE_MST)},
-                        .l3hdr = {.prio = 0, .totalLen = l3TotalSize, .ttl = 1, .src = l3SrcAddr, .dst = l3DstAddr },
-                        .l4hdr = {0, 0, 0}};
+                        .l3hdr = {.prio = 0, .totalLen = l3TotalSize, .ttl = 1, .src = l3SrcAddr, .dst = l3DstAddr }
+                        };
 
                     uint8_t size;
 
@@ -1942,6 +1736,14 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
         sendPduMsg(mock, &uart_objs[port], rxPgOfst, pktFrag1.data(),
             pktFrag1.size(), port, true);
 
+#ifndef NETWORK_ISR_RECV
+        /* do full read of next message */
+        uint8_t data[MSG_SIZE];
+        uint16_t len = appReadUdp(pos, data, MSG_SIZE);
+        ASSERT_EQ(len, MSG_SIZE);
+        ASSERT_EQ(0, std::memcmp(data, msg.data(), MSG_SIZE));
+#endif
+
         /* make sure the freed mem is reset so its not using prev memory */
         uint8_t currHd = g_free_head;
         while (currHd != INVALID_PAGE) {
@@ -1991,8 +1793,8 @@ TEST_P(MultiHop, pduHopFrwdBrdCst)
                             (pktFrag1.size() - (sizeof(L2Hdr) + sizeof(L3Hdr) + sizeof(L2Crc_t))), /* L4 hdr is part of page buffer */
                             pduHdr);
         }
+        ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
     }
-    ASSERT_EQ(g_free_count, (uint16_t)NUM_PAGES);
 }
 //#endif
 

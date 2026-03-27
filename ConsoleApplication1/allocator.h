@@ -52,7 +52,7 @@ void pgPtrInit(PgPtr_t * const pgPtr);
 void addUser(PgPtr_t *pgPtr);
 uint8_t getPgUsers(uint8_t pg);
 void freePgPtrHd(PgPtrHd_t* pgPtrHd, uint16_t len);
-void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint16_t size);
+void readFromPgs(PgPtr_t* const pgPtr, uint8_t* val, uint16_t size, bool free);
 uint16_t  freePgPtrLen(PgPtr_t* pgPtr, uint16_t len);
 uint16_t  advancePgPtrLen(PgPtr_t* pgPtr, uint16_t len);
 bool allocPgPtr(PgPtr_t* pgPtr, uint16_t len);

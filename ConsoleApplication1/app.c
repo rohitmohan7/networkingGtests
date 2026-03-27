@@ -14,3 +14,7 @@ void appRecv(uint16_t pos, const uint8_t * const data, uint16_t len) { // TODO
 }
 #endif
 #endif
+
+uint16_t appReadUdp(uint16_t pos, uint8_t* data, uint16_t len) {
+    return l4ReadUdp(pos, data, len);
+}

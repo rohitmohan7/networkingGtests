@@ -177,7 +177,6 @@ void l2TxCmplt(uint8_t port) {
 
 static inline void l2AbortTx(uint8_t port) {
 	mst_token[port] = false;
-	l2RxPktDesc[port].l2RxPkt.crc = 0;
 }
 
 /*void l2Send(L2Packet) {
@@ -257,7 +256,7 @@ static inline void l2AbortRx(uint8_t port) {
 	l2RxPktDesc[port].abort = true;
 	l2RxPktDesc[port].l2RxPkt.hdr.type = L2_PKT_TYPE_INVALID;
 	l2RxPktDesc[port].l2RxPkt.hdr.addr = 0x00;
-	l2RxPktDesc[port].l2RxPkt.crc = 0;
+	l2RxPktDesc[port].calcCrc = 0;
 	l3AbortRx(&l2RxPktDesc[port].l2RxPkt.msg.pdu);
 }
 
